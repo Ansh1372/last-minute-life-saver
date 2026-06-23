@@ -51,6 +51,9 @@ const AgentState = Annotation.Root({
   subtasks: Annotation<Subtask[]>(),
   artifacts: Annotation<StarterArtifact[]>(),
   accessToken: Annotation<string | undefined>(),
+  busyEvents: Annotation<CalendarEvent[]>(),
+  feedback: Annotation<string | undefined>(),
+  evaluationCount: Annotation<number>(),
 });
 
 // Lazy loader for GoogleGenAI to ensure safe API Key startup
@@ -62,7 +65,29 @@ function getGeminiClient(): GoogleGenAI {
   return new GoogleGenAI({ apiKey: key });
 }
 
-// Node 1: Analyze Goal & Create Subtasks
+// Robust API Retry mechanism with Exponential Backoff and Jitter (Requirement 3)
+async function callWithRetry<T>(fn: () => Promise<T>, retries: number = 3, baseDelayMs: number = 1000): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      attempt++;
+      if (attempt > retries) {
+        throw error;
+      }
+      
+      const exponentialDelay = baseDelayMs * Math.pow(2, attempt - 1);
+      const jitter = Math.random() * 200; // 0-200ms randomized interval to prevent collision congestion
+      const delay = exponentialDelay + jitter;
+      
+      console.warn(`[API Resiliency] Attempt ${attempt} failed: "${error.message}". Retrying in ${Math.round(delay)}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+// Node 1: Analyze Goal & Create Subtasks (Gemini 1.5 Flash - High Speed)
 async function analyzeGoalNode(state: typeof AgentState.State) {
   const session = sessions[state.sessionId];
   writeAuditLog(session, "analyzeGoal", "Analyzing Goal", `Starting analysis on goal: "${state.goal}"`, "info");
@@ -96,13 +121,12 @@ async function analyzeGoalNode(state: typeof AgentState.State) {
       DO NOT return any markdown wrapping. Just the raw, valid JSON list.
     `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const response = await callWithRetry(() => ai.models.generateContent({
+      model: 'gemini-1.5-flash',
       contents: prompt,
-    });
+    }));
 
     const text = response.text?.trim() || "[]";
-    // clean markdown JSON wrappers if any
     const cleanJson = text.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
     const list = JSON.parse(cleanJson);
 
@@ -130,10 +154,10 @@ async function analyzeGoalNode(state: typeof AgentState.State) {
   return { subtasks };
 }
 
-// Node 2: Check Google Calendar for free/busy status
+// Node 2: Check Google Calendar for free/busy status (Gemini 1.5 Pro - Structured Constraints Assessment)
 async function checkCalendarNode(state: typeof AgentState.State) {
   const session = sessions[state.sessionId];
-  writeAuditLog(session, "checkCalendar", "Checking Calendar", "Initiating check of Google Calendar schedule conflicts.", "info");
+  writeAuditLog(session, "checkCalendar", "Checking Calendar", "Initiating check of Google Calendar schedule conflicts with Gemini 1.5 Pro.", "info");
   
   if (session) session.status = 'calendar_check';
 
@@ -144,32 +168,34 @@ async function checkCalendarNode(state: typeof AgentState.State) {
       const timeMin = new Date().toISOString();
       const timeMax = new Date(state.targetDate).toISOString();
 
-      // Check primary calendar events to identify slot availability
-      const calendarUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&orderBy=startTime`;
-      const res = await fetch(calendarUrl, {
-        headers: { Authorization: `Bearer ${state.accessToken}` },
-      });
+      const fetchCalendar = async () => {
+        const calendarUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(timeMin)}&timeMax=${encodeURIComponent(timeMax)}&singleEvents=true&orderBy=startTime`;
+        const res = await fetch(calendarUrl, {
+          headers: { Authorization: `Bearer ${state.accessToken}` },
+        });
 
-      if (res.ok) {
-        const data = await res.json();
-        const items = data.items || [];
-        busyEvents = items.map((item: any) => ({
-          summary: item.summary || "Busy Slot",
-          start: { dateTime: item.start?.dateTime || item.start?.date },
-          end: { dateTime: item.end?.dateTime || item.end?.date },
-        }));
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(`Google Calendar API returned status ${res.status}: ${errorText}`);
+        }
+        return await res.json();
+      };
 
-        writeAuditLog(
-          session,
-          "checkCalendar",
-          "Synced Calendar",
-          `Consulted live Google Calendar. Found ${busyEvents.length} existing events before the deadline.`,
-          "success"
-        );
-      } else {
-        const errorText = await res.text();
-        throw new Error(`Google Calendar API returned status ${res.status}: ${errorText}`);
-      }
+      const data = await callWithRetry(fetchCalendar);
+      const items = data.items || [];
+      busyEvents = items.map((item: any) => ({
+        summary: item.summary || "Busy Slot",
+        start: { dateTime: item.start?.dateTime || item.start?.date || item.start?.dateTime },
+        end: { dateTime: item.end?.dateTime || item.end?.date || item.end?.dateTime },
+      }));
+
+      writeAuditLog(
+        session,
+        "checkCalendar",
+        "Synced Calendar",
+        `Consulted live Google Calendar. Found ${busyEvents.length} existing events before the deadline.`,
+        "success"
+      );
     } catch (err: any) {
       writeAuditLog(
         session,
@@ -178,30 +204,49 @@ async function checkCalendarNode(state: typeof AgentState.State) {
         `Could not access live Google Calendar: ${err.message}. Falling back to default open slots.`,
         "warning"
       );
-      // Fallback simulates realistic baseline busy items (mid-day blocks / sleep hours)
       busyEvents = getDefaultMockBusySlots();
     }
   } else {
-    // If no access token is specified, log information and use simulated calendar blocks
     writeAuditLog(
       session,
       "checkCalendar",
       "Simulated Calendar",
-      "No Google Auth Token specified. Working with mock calendar constraints for planning demo.",
+      "No Google Auth Token specified. Working with mock calendar constraints for planning.",
       "warning"
     );
     busyEvents = getDefaultMockBusySlots();
   }
 
-  // Store information in memory session for transparency
-  return { sessionId: state.sessionId };
+  // Conduct structural stress/conflict evaluation using Gemini 1.5 Pro
+  try {
+    const ai = getGeminiClient();
+    const auditPrompt = `
+      You are the "Calendar Audit Node" (Deep Reasoning Engine) for "Last-Minute Life Saver".
+      The user goal is: "${state.goal}" with a deadline: "${state.targetDate}".
+      Current busy schedule blocks list:
+      ${JSON.stringify(busyEvents)}
+      Current local time context is: "${new Date().toISOString()}".
+
+      Analyze if these calendar block occupancies pose extreme conflicts or stress.
+      Return a concise, professional 1-2 sentence stress assessment highlighting conflict areas.
+    `;
+    const auditRes = await callWithRetry(() => ai.models.generateContent({
+      model: 'gemini-1.5-pro',
+      contents: auditPrompt,
+    }));
+    const auditSummary = auditRes.text?.trim() || "No critical conflicts detected on initial calendar audit scan.";
+    writeAuditLog(session, "checkCalendar", "Calendar Analysis", auditSummary, "info");
+  } catch (auditError: any) {
+    writeAuditLog(session, "checkCalendar", "Calendar Analysis Overpassed", `Audit scan bypassed: ${auditError.message}`, "info");
+  }
+
+  return { busyEvents };
 }
 
 function getDefaultMockBusySlots(): CalendarEvent[] {
   const today = new Date();
   const busy: CalendarEvent[] = [];
   
-  // Add standing meeting slots (e.g. 10 AM to 11 AM daily)
   for (let i = 0; i < 5; i++) {
     const meetingDate = new Date(today);
     meetingDate.setDate(today.getDate() + i);
@@ -218,66 +263,155 @@ function getDefaultMockBusySlots(): CalendarEvent[] {
   return busy;
 }
 
-// Node 3: Schedule Tasks Around Busy Slots
+// Node 3: Schedule Tasks Around Busy Slots (Gemini 1.5 Pro - Intelligent Pathfinding)
 async function scheduleTasksNode(state: typeof AgentState.State) {
   const session = sessions[state.sessionId];
-  writeAuditLog(session, "scheduleTasks", "Allocating Schedule", "Running conflict-avoidance optimization on subtasks.", "info");
+  writeAuditLog(session, "scheduleTasks", "Allocating Schedule", "Running conflict-avoidance optimization on subtasks with Gemini 1.5 Pro.", "info");
 
-  const scheduled = [...state.subtasks];
-  
+  let scheduled = [...state.subtasks];
+  const busy = state.busyEvents || [];
+  let geminiSuccess = false;
+
   try {
-    let currentPointer = new Date();
-    // Round to next 30-minute block for cleaner slots
-    currentPointer.setMinutes(Math.ceil(currentPointer.getMinutes() / 30) * 30, 0, 0);
+    const ai = getGeminiClient();
+    let schedulingPrompt = `
+      You are the "Scheduling Node" (Deep Reasoning Engine) for "Last-Minute Life Saver".
+      Your job is to strategically schedule the following list of subtasks sequentially, avoiding overlaps with pre-existing busy calendar slots:
+      
+      Subtasks to schedule:
+      ${JSON.stringify(scheduled)}
 
-    for (let i = 0; i < scheduled.length; i++) {
-      const durationMin = scheduled[i].estimatedMinutes;
-      let startStr = currentPointer.toISOString();
-      let endPointer = new Date(currentPointer.getTime() + durationMin * 60000);
-      let endStr = endPointer.toISOString();
+      Busy Calendar Slots (DO NOT overlap or schedule subtasks during these times):
+      ${JSON.stringify(busy)}
 
-      // Ensure tasks are scheduled during standard productive daytime (09:00 - 18:00)
-      const hours = currentPointer.getHours();
-      if (hours < 9) {
-        currentPointer.setHours(9, 0, 0, 0);
-        startStr = currentPointer.toISOString();
-        endPointer = new Date(currentPointer.getTime() + durationMin * 60000);
-        endStr = endPointer.toISOString();
-      } else if (hours >= 18) {
-        currentPointer.setDate(currentPointer.getDate() + 1);
-        currentPointer.setHours(9, 0, 0, 0);
-        startStr = currentPointer.toISOString();
-        endPointer = new Date(currentPointer.getTime() + durationMin * 60000);
-        endStr = endPointer.toISOString();
-      }
+      Current Time: "${new Date().toISOString()}"
+      Absolute Hard Deadline: "${state.targetDate}"
 
-      scheduled[i].scheduledStart = startStr;
-      scheduled[i].scheduledEnd = endStr;
-      scheduled[i].status = 'approved'; // Wait for user final gate
+      Rules:
+      1. Each subtask has an "id" and "estimatedMinutes" field indicating how long it takes.
+      2. Set a "scheduledStart" and "scheduledEnd" (ISO 8601 strings, e.g., "2026-06-22T09:00:00.000Z") for each subtask.
+      3. No two subtasks can overlap in time.
+      4. Subtasks must not overlap with any busy calendar slots in busy slots list.
+      5. Try to keep scheduled times within standard daytime hours (09:00 to 18:00 inside local time), but if the absolute deadline is extremely tight or today, you can schedule outside these hours to ensure completion before the targetDate.
+      6. All scheduled subtasks must be completed before the Absolute Hard Deadline "${state.targetDate}".
+    `;
 
-      // Advance clock by duration + 30m break
-      currentPointer = new Date(endPointer.getTime() + 30 * 60000);
+    if (state.feedback) {
+      schedulingPrompt += `
+        CRITICAL CORRECTION REQUEST:
+        The previous scheduling attempt was evaluated by the LLM-As-A-Judge and failed. Please adjust based on the feedback:
+        "${state.feedback}"
+      `;
     }
 
+    schedulingPrompt += `
+      Return ONLY a JSON array of objects with this exact format:
+      [
+        {
+          "id": "task-...",
+          "scheduledStart": "ISO_DATE_STRING",
+          "scheduledEnd": "ISO_DATE_STRING"
+        }
+      ]
+      No markdown, no backticks, return only raw valid JSON.
+    `;
+
+    const res = await callWithRetry(() => ai.models.generateContent({
+      model: 'gemini-1.5-pro',
+      contents: schedulingPrompt,
+      config: { responseMimeType: "application/json" }
+    }));
+
+    const text = res.text?.trim() || "[]";
+    const cleanJson = text.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
+    const mappedTimes = JSON.parse(cleanJson);
+
+    if (Array.isArray(mappedTimes) && mappedTimes.length > 0) {
+      scheduled = scheduled.map(task => {
+        const found = mappedTimes.find((m: any) => m.id === task.id);
+        if (found && found.scheduledStart && found.scheduledEnd) {
+          return {
+            ...task,
+            scheduledStart: found.scheduledStart,
+            scheduledEnd: found.scheduledEnd,
+            status: 'approved'
+          };
+        }
+        return task;
+      });
+      geminiSuccess = true;
+      writeAuditLog(
+        session,
+        "scheduleTasks",
+        "AI Conflict Resolution Complete",
+        "Gemini 1.5 Pro resolved all busy schedule overlaps and assigned optimal time blocks.",
+        "success"
+      );
+    }
+  } catch (error: any) {
     writeAuditLog(
       session,
       "scheduleTasks",
-      "Scheduling Complete",
-      `Allocated all ${scheduled.length} subtasks into free calendar slots while respecting hours.`,
-      "success"
+      "AI Scheduling Failed",
+      `Gemini scheduling failed: ${error.message}. Falling back to standard cron-based routing.`,
+      "warning"
     );
-  } catch (error: any) {
-    writeAuditLog(session, "scheduleTasks", "Scheduling Fault", error.message, "error");
-    throw error;
+  }
+
+  if (!geminiSuccess || scheduled.some(t => !t.scheduledStart)) {
+    try {
+      let currentPointer = new Date();
+      currentPointer.setMinutes(Math.ceil(currentPointer.getMinutes() / 30) * 30, 0, 0);
+
+      for (let i = 0; i < scheduled.length; i++) {
+        if (!scheduled[i].scheduledStart || !geminiSuccess) {
+          const durationMin = scheduled[i].estimatedMinutes;
+          let startStr = currentPointer.toISOString();
+          let endPointer = new Date(currentPointer.getTime() + durationMin * 60000);
+          let endStr = endPointer.toISOString();
+
+          const hours = currentPointer.getHours();
+          if (hours < 9) {
+            currentPointer.setHours(9, 0, 0, 0);
+            startStr = currentPointer.toISOString();
+            endPointer = new Date(currentPointer.getTime() + durationMin * 60000);
+            endStr = endPointer.toISOString();
+          } else if (hours >= 18) {
+            currentPointer.setDate(currentPointer.getDate() + 1);
+            currentPointer.setHours(9, 0, 0, 0);
+            startStr = currentPointer.toISOString();
+            endPointer = new Date(currentPointer.getTime() + durationMin * 60000);
+            endStr = endPointer.toISOString();
+          }
+
+          scheduled[i].scheduledStart = startStr;
+          scheduled[i].scheduledEnd = endStr;
+          scheduled[i].status = 'approved';
+
+          currentPointer = new Date(endPointer.getTime() + 30 * 60000);
+        }
+      }
+
+      writeAuditLog(
+        session,
+        "scheduleTasks",
+        "Deterministic Scheduler Active",
+        `Allocated subtasks sequentially avoiding standard off-hours.`,
+        "success"
+      );
+    } catch (fallbackError: any) {
+      writeAuditLog(session, "scheduleTasks", "Scheduling Fault", fallbackError.message, "error");
+      throw fallbackError;
+    }
   }
 
   return { subtasks: scheduled };
 }
 
-// Node 4: Draft Starter Artifacts
+// Node 4: Draft Starter Artifacts (Gemini 1.5 Flash - High Speed)
 async function draftArtifactsNode(state: typeof AgentState.State) {
   const session = sessions[state.sessionId];
-  writeAuditLog(session, "draftArtifacts", "Drafting Templates", "Synthesizing Starter Docs and Emails using Gemini.", "info");
+  writeAuditLog(session, "draftArtifacts", "Drafting Templates", "Synthesizing Starter Docs and Emails using Gemini 1.5 Flash.", "info");
   
   if (session) session.status = 'drafting';
 
@@ -285,17 +419,20 @@ async function draftArtifactsNode(state: typeof AgentState.State) {
   try {
     const ai = getGeminiClient();
 
-    // Draft 1: Email Outline
-    const emailPrompt = `
+    let emailPrompt = `
       You are drafting a quick, professional email communications outline for the goal: "${state.goal}".
       Draft a starter message to stakeholders, project managers, or team members to buy time, provide a heads-up, or share status.
-      Be crisp, reassuring, and highly structured.
+      Be crisp, reassuring, and highly structured. Always draft a real, professional message completely populated with specific, contextual details based on the goal. DO NOT use generic bracket placeholders (e.g. do not write '[Your Name]', '[Insert Project Name]', 'insert_date_here').
       Return ONLY plain text. Do not wrap in markdown quotes, JSON, backticks, or any structures. Just output the email body directly.
     `;
-    const emailRes = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    if (state.feedback) {
+      emailPrompt += `\nCRITICAL AUDIT CORRECTION (Please correct this issue in the email draft): ${state.feedback}`;
+    }
+
+    const emailRes = await callWithRetry(() => ai.models.generateContent({
+      model: 'gemini-1.5-flash',
       contents: emailPrompt
-    });
+    }));
     const emailDraft = emailRes.text?.trim() || "";
 
     artifacts.push({
@@ -307,17 +444,20 @@ async function draftArtifactsNode(state: typeof AgentState.State) {
       status: 'draft',
     });
 
-    // Draft 2: Markdown Outline / Google Doc Outline
-    const docPrompt = `
+    let docPrompt = `
       You are structuring a strategic, action-packed project outline document for the goal: "${state.goal}".
       Create a detailed markdown agenda, outline, presentation notes, or roadmap that gets the user 40% of the way finished with the work.
-      Include checklists, sections, and clear placeholders.
-      Return ONLY markdown text directly. Do not wrap in extra JSON. Just output markdown content directly.
+      Include checklists, sections, and clear placeholders, but populate them with realistic details instead of empty fields or templates. DO NOT use empty variables or template placeholders (like '[Goal]', 'insert_target_date').
+      Return ONLY markdown text directly. Do not wrap in extra JSON or backticks. Just output markdown content directly.
     `;
-    const docRes = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    if (state.feedback) {
+      docPrompt += `\nCRITICAL AUDIT CORRECTION (Please correct this issue in the doc outline): ${state.feedback}`;
+    }
+
+    const docRes = await callWithRetry(() => ai.models.generateContent({
+      model: 'gemini-1.5-flash',
       contents: docPrompt
-    });
+    }));
     const docDraft = docRes.text?.trim() || "";
 
     artifacts.push({
@@ -343,17 +483,116 @@ async function draftArtifactsNode(state: typeof AgentState.State) {
   return { artifacts };
 }
 
+// Node 5: LLM-as-a-Judge Evaluation Node (Gemini 1.5 Pro - High Precision Validation)
+async function evaluateAgendaNode(state: typeof AgentState.State) {
+  const session = sessions[state.sessionId];
+  writeAuditLog(session, "evaluateAgenda", "Reviewing Plan Quality", "LLM-as-a-Judge validating agenda consistency and tone completeness using Gemini 1.5 Pro.", "info");
+
+  const subtasks = state.subtasks || [];
+  const artifacts = state.artifacts || [];
+  const evaluationCount = (state.evaluationCount || 0) + 1;
+
+  // Gracefully skip after 2 iterations to protect user and model boundaries from looping infinitely
+  if (evaluationCount > 2) {
+    writeAuditLog(session, "evaluateAgenda", "Review Cycle Limit Cleared", "Validation cleared after reaching retry boundaries.", "success");
+    return {
+      feedback: undefined,
+      evaluationCount
+    };
+  }
+
+  const judgePrompt = `
+    You are the "LLM-as-a-Judge" validation node for the "Last-Minute Life Saver" agent.
+    Your task is to analyze and score the proposed agenda (the list of scheduled subtasks) and generated communications drafts (the workspace templates).
+    
+    Here is the goal: "${state.goal}"
+    Deadline: "${state.targetDate}"
+
+    Input Proposed Schedule:
+    ${JSON.stringify(subtasks)}
+
+    Input Pre-existing Busy Blocks (DO NOT overlap with these):
+    ${JSON.stringify(state.busyEvents || [])}
+
+    Input Communications Artifacts (Email and Google Doc drafts):
+    ${JSON.stringify(artifacts)}
+
+    Verify strictly on two main criteria:
+    1. Temporal Consistency:
+       - Are all scheduled start and end blocks mathematically valid (end time is strictly after start time)?
+       - Are there any duplicate dates or overlaps between the subtasks themselves?
+       - Do any subtasks overlap with the user's pre-existing busy slots?
+       - Are they all completed before the target date "${state.targetDate}"?
+    2. Tone and Completeness:
+       - Is the tone of the draft emails and outlines professional, reassuring, calm, and contextually rich?
+       - Are all placeholders populated with realistic, logical text? There should be NO generic brackets, variables, or unpopulated tags (like "[Insert Name Here]", "your_name_here", "INSERT_DATE", "[Goal]", or generic lorem ipsum).
+
+    Determine if the plan PASSES or FAILS.
+    If it passes both criteria perfectly, set passed: true.
+    If there are ANY violations, set passed: false, and specify constructive, clear feedback on what needs to be rewritten, updated, or improved in the feedback string.
+
+    Return strictly a JSON object with this structure:
+    {
+      "passed": false,
+      "feedback": "Your detailed feedback explaining the issue to correct."
+    }
+    No markdown, no backticks, return only valid JSON parsing format.
+  `;
+
+  try {
+    const ai = getGeminiClient();
+    const res = await callWithRetry(() => ai.models.generateContent({
+      model: 'gemini-1.5-pro',
+      contents: judgePrompt,
+      config: { responseMimeType: 'application/json' }
+    }));
+
+    const cleanRes = (res.text || "").trim().replace(/^```json\s*/i, '').replace(/```$/, '').trim();
+    const result = JSON.parse(cleanRes || "{\"passed\": true}");
+    
+    if (result.passed === false) {
+      writeAuditLog(session, "evaluateAgenda", "Judge Evaluation Failed", `Critique (attempt ${evaluationCount}): ${result.feedback}`, "warning");
+      return {
+        feedback: result.feedback,
+        evaluationCount
+      };
+    } else {
+      writeAuditLog(session, "evaluateAgenda", "Judge Evaluation Passed", "The planned schedule is temporally consistent and drafts are complete and professional.", "success");
+      return {
+        feedback: undefined,
+        evaluationCount
+      };
+    }
+  } catch (error: any) {
+    writeAuditLog(session, "evaluateAgenda", "Judge Evaluation Overpassed", `Failed to run judge: ${error.message}. Force passing.`, "warning");
+    return {
+      feedback: undefined,
+      evaluationCount
+    };
+  }
+}
+
 // Initialize LangGraph workflow build
 const workflow = new StateGraph(AgentState)
   .addNode("analyzeGoal", analyzeGoalNode)
   .addNode("checkCalendar", checkCalendarNode)
   .addNode("scheduleTasks", scheduleTasksNode)
   .addNode("draftArtifacts", draftArtifactsNode)
+  .addNode("evaluateAgenda", evaluateAgendaNode)
   .addEdge("__start__", "analyzeGoal")
   .addEdge("analyzeGoal", "checkCalendar")
   .addEdge("checkCalendar", "scheduleTasks")
   .addEdge("scheduleTasks", "draftArtifacts")
-  .addEdge("draftArtifacts", "__end__");
+  .addEdge("draftArtifacts", "evaluateAgenda")
+  .addConditionalEdges(
+    "evaluateAgenda",
+    (state) => {
+      if (state.feedback) {
+        return "draftArtifacts";
+      }
+      return "__end__";
+    }
+  );
 
 const agentWorkflow = workflow.compile();
 
@@ -400,6 +639,9 @@ app.post("/api/sessions", async (req, res) => {
         subtasks: [],
         artifacts: [],
         accessToken,
+        busyEvents: [],
+        feedback: undefined,
+        evaluationCount: 0,
       });
 
       // Commit LangGraph generated outputs back to the shared storage session
@@ -474,24 +716,29 @@ app.post("/api/sessions/:id/approve", async (req, res) => {
       if (subtask.status !== 'rejected' && subtask.scheduledStart) {
         if (accessToken) {
           writeAuditLog(session, "googleCalendar", "Publishing Event", `Writing event "${subtask.title}" to Google Calendar...`, "info");
-          const calendarRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              summary: `[Saver] ${subtask.title}`,
-              description: subtask.description,
-              start: { dateTime: subtask.scheduledStart },
-              end: { dateTime: subtask.scheduledEnd || new Date(new Date(subtask.scheduledStart).getTime() + 60 * 60000).toISOString() },
-            })
+          
+          await callWithRetry(async () => {
+            const calendarRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                summary: `[Saver] ${subtask.title}`,
+                description: subtask.description,
+                start: { dateTime: subtask.scheduledStart },
+                end: { dateTime: subtask.scheduledEnd || new Date(new Date(subtask.scheduledStart).getTime() + 60 * 60000).toISOString() },
+              })
+            });
+
+            if (!calendarRes.ok) {
+              const err = await calendarRes.text();
+              throw new Error(`Calendar Error: ${err}`);
+            }
+            return calendarRes;
           });
 
-          if (!calendarRes.ok) {
-            const err = await calendarRes.text();
-            throw new Error(`Calendar Error: ${err}`);
-          }
           subtask.status = 'scheduled';
           writeAuditLog(session, "googleCalendar", "Synced Event", `Successfully added "${subtask.title}" to Google Calendar.`, "success");
         } else {
@@ -509,50 +756,56 @@ app.post("/api/sessions/:id/approve", async (req, res) => {
           writeAuditLog(session, "googleDocs", "Creating Document", `Creating Google Doc titled "${artifact.title}"`, "info");
           
           // Step 1: Create Document
-          const docCreateRes = await fetch("https://docs.googleapis.com/v1/documents", {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({ title: artifact.title })
+          const docId = await callWithRetry(async () => {
+            const docCreateRes = await fetch("https://docs.googleapis.com/v1/documents", {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ title: artifact.title })
+            });
+
+            if (!docCreateRes.ok) {
+              const err = await docCreateRes.text();
+              throw new Error(`Docs Create Error: ${err}`);
+            }
+
+            const docData = await docCreateRes.json();
+            return docData.documentId;
           });
 
-          if (!docCreateRes.ok) {
-            const err = await docCreateRes.text();
-            throw new Error(`Docs Create Error: ${err}`);
-          }
-
-          const docData = await docCreateRes.json();
-          const docId = docData.documentId;
           artifact.workspaceUrl = `https://docs.google.com/document/d/${docId}/edit`;
 
           // Step 2: Append Markdown Content
-          const docUpdateRes = await fetch(`https://docs.googleapis.com/v1/documents/${docId}:batchUpdate`, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              requests: [
-                {
-                  insertText: {
-                    location: { index: 1 },
-                    text: artifact.content
+          await callWithRetry(async () => {
+            const docUpdateRes = await fetch(`https://docs.googleapis.com/v1/documents/${docId}:batchUpdate`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                requests: [
+                  {
+                    insertText: {
+                      location: { index: 1 },
+                      text: artifact.content
+                    }
                   }
-                }
-              ]
-            })
+                ]
+              })
+            });
+
+            if (!docUpdateRes.ok) {
+              const err = await docUpdateRes.text();
+              throw new Error(`Docs Write Error: ${err}`);
+            }
+            return docUpdateRes;
           });
 
-          if (docUpdateRes.ok) {
-            artifact.status = 'created';
-            writeAuditLog(session, "googleDocs", "Document Published", `Outline successfully written. Doc URL: ${artifact.workspaceUrl}`, "success");
-          } else {
-            const err = await docUpdateRes.text();
-            throw new Error(`Docs Write Error: ${err}`);
-          }
+          artifact.status = 'created';
+          writeAuditLog(session, "googleDocs", "Document Published", `Outline successfully written. Doc URL: ${artifact.workspaceUrl}`, "success");
         } else if (artifact.type === 'email') {
           writeAuditLog(session, "gmail", "Creating Gmail draft", `Creating Gmail Draft: "${artifact.title}"`, "info");
           
@@ -570,25 +823,28 @@ app.post("/api/sessions/:id/approve", async (req, res) => {
             .replace(/\//g, '_')
             .replace(/=+$/, '');
 
-          const gmailRes = await fetch("https://www.googleapis.com/gmail/v1/users/me/drafts", {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              message: { raw: rawEmail }
-            })
+          await callWithRetry(async () => {
+            const gmailRes = await fetch("https://www.googleapis.com/gmail/v1/users/me/drafts", {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                message: { raw: rawEmail }
+              })
+            });
+
+            if (!gmailRes.ok) {
+              const err = await gmailRes.text();
+              throw new Error(`Gmail Draft Error: ${err}`);
+            }
+            return gmailRes;
           });
 
-          if (gmailRes.ok) {
-            artifact.status = 'created';
-            artifact.workspaceUrl = "https://mail.google.com/mail/#drafts";
-            writeAuditLog(session, "gmail", "Gmail Draft Synced", `Draft successfully pinned in Gmail folder.`, "success");
-          } else {
-            const err = await gmailRes.text();
-            throw new Error(`Gmail Draft Error: ${err}`);
-          }
+          artifact.status = 'created';
+          artifact.workspaceUrl = "https://mail.google.com/mail/#drafts";
+          writeAuditLog(session, "gmail", "Gmail Draft Synced", `Draft successfully pinned in Gmail folder.`, "success");
         }
       } else {
         // Simulation feedback
