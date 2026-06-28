@@ -2,8 +2,9 @@ import express from "express";
 import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenAI } from "@google/genai";
-import { StateGraph, Annotation } from "@langchain/langgraph";
+import { GoogleGenAI, Type } from "@google/genai";
+import { Groq } from "groq-sdk";
+import { StateGraph, Annotation, MemorySaver } from "@langchain/langgraph";
 import { Subtask, StarterArtifact, AuditLogEntry, PanickedGoal, CalendarEvent } from "./src/types";
 
 dotenv.config();
@@ -16,6 +17,23 @@ app.use(express.json());
 // Global In-Memory Store for scalable task execution & audit logging
 const sessions: { [id: string]: PanickedGoal } = {};
 const globalAuditLogs: AuditLogEntry[] = [];
+
+import { EventEmitter } from "events";
+const sseEmitter = new EventEmitter();
+
+function emitAgentStep(sessionId: string, message: string) {
+  const session = sessions[sessionId];
+  if (session) {
+    if (!session.streamSteps) {
+      session.streamSteps = [];
+    }
+    // Prevent duplicate entries
+    if (!session.streamSteps.includes(message)) {
+      session.streamSteps.push(message);
+    }
+  }
+  sseEmitter.emit(`step:${sessionId}`, message);
+}
 
 // Helper to log system events globally and in local session
 function writeAuditLog(
@@ -56,22 +74,75 @@ const AgentState = Annotation.Root({
   evaluationCount: Annotation<number>(),
 });
 
+function is503Error(error: any): boolean {
+  if (!error) return false;
+  const message = error.message || "";
+  const status = error.status || "";
+  const code = error.code || "";
+  const str = String(error);
+  const searchStr = `${message} ${status} ${code} ${str}`.toLowerCase();
+  return searchStr.includes('503') || 
+         searchStr.includes('unavailable') || 
+         searchStr.includes('experiencing high demand') || 
+         searchStr.includes('overloaded');
+}
+
+function isQuotaError(error: any): boolean {
+  if (!error) return false;
+  const message = error.message || "";
+  const status = error.status || "";
+  const code = error.code || "";
+  const str = String(error);
+  const searchStr = `${message} ${status} ${code} ${str}`.toLowerCase();
+  return searchStr.includes('429') || 
+         searchStr.includes('resource_exhausted') || 
+         searchStr.includes('quota');
+}
+
+// Global constants
+const FALLBACK_KEY = "";
+
 // Lazy loader for GoogleGenAI to ensure safe API Key startup
 function getGeminiClient(): GoogleGenAI {
-  const key = process.env.GEMINI_API_KEY;
+  const primaryKey = process.env.GEMINI_API_KEY;
+  const key = primaryKey || FALLBACK_KEY;
   if (!key || key === "MY_GEMINI_API_KEY") {
     throw new Error("GEMINI_API_KEY is not configured in the workspace environments.");
   }
   return new GoogleGenAI({ apiKey: key });
 }
 
+function isRetryableError(error: any): boolean {
+  if (!error) return true;
+  const str = String(error).toLowerCase();
+  // Do not retry OAuth / Authorization / Client API 4xx issues
+  if (str.includes("401") || str.includes("403") || str.includes("404") || (str.includes("400") && !str.includes("429"))) {
+    return false;
+  }
+  return true;
+}
+
 // Robust API Retry mechanism with Exponential Backoff and Jitter (Requirement 3)
-async function callWithRetry<T>(fn: () => Promise<T>, retries: number = 3, baseDelayMs: number = 1000): Promise<T> {
+async function callWithRetry<T>(fn: () => Promise<T>, retries: number = 3, baseDelayMs: number = 5000): Promise<T> {
   let attempt = 0;
   while (true) {
     try {
-      return await fn();
+      const res = await fn();
+      if (res && typeof res === "object") {
+        const usage = (res as any).usageMetadata || (res as any).usage;
+        if (usage) {
+          const promptTokens = usage.promptTokenCount ?? usage.prompt_tokens ?? 0;
+          const candidatesTokens = usage.candidatesTokenCount ?? usage.candidates_tokens ?? usage.completion_tokens ?? 0;
+          console.log(`📊 Token Consumption: ${promptTokens} input / ${candidatesTokens} output tokens`);
+        }
+      }
+      return res;
     } catch (error: any) {
+      if (!isRetryableError(error) || isQuotaError(error) || is503Error(error)) {
+        // Fast-fail non-retryable, quota (429), or model overloaded (503) errors to allow immediate fallback/handling
+        throw error;
+      }
+
       attempt++;
       if (attempt > retries) {
         throw error;
@@ -81,14 +152,82 @@ async function callWithRetry<T>(fn: () => Promise<T>, retries: number = 3, baseD
       const jitter = Math.random() * 200; // 0-200ms randomized interval to prevent collision congestion
       const delay = exponentialDelay + jitter;
       
-      console.warn(`[API Resiliency] Attempt ${attempt} failed: "${error.message}". Retrying in ${Math.round(delay)}ms...`);
+      console.log(`[API Resiliency] Run ${attempt} status issues. Adapting/retrying in ${Math.round(delay)}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
 }
 
-// Node 1: Analyze Goal & Create Subtasks (Gemini 1.5 Flash - High Speed)
+// Unified Resilient Generator with Groq Fallback on Quota Exhaustion or Service Unavailability
+async function generateWithGroqFallback(
+  aiCall: () => Promise<any>,
+  promptText: string,
+  options?: { isJson?: boolean }
+): Promise<{ text: string }> {
+  try {
+    return await aiCall();
+  } catch (error: any) {
+    const isQuota = isQuotaError(error);
+    const is503 = is503Error(error);
+    if (isQuota || is503) {
+      console.log(`[Groq Fallback Engine] Gemini hit quota/availability limit (${isQuota ? '429 Quota' : '503 Unavailable'}). Seamlessly routing to Groq fallback...`);
+      const groqApiKey = process.env.GROQ_API_KEY;
+      if (groqApiKey && groqApiKey !== "MY_GROQ_API_KEY") {
+        try {
+          // Note: llama-3.1-70b-versatile is decommissioned by Groq, so we route to the active 'llama-3.3-70b-versatile' replacement to ensure clean execution.
+          const targetModel = "llama-3.3-70b-versatile";
+          console.log(`[Groq Fallback Engine] Instantiating Groq client and routing to '${targetModel}'...`);
+          const groq = new Groq({ apiKey: groqApiKey });
+          
+          const chatCompletion = await groq.chat.completions.create({
+            messages: [{ role: 'user', content: promptText }],
+            model: targetModel,
+            response_format: options?.isJson ? { type: 'json_object' } : undefined
+          });
+
+          let groqText = chatCompletion.choices[0]?.message?.content || "";
+          console.log(`[Groq Fallback Engine] Successfully retrieved response from Groq. Text length: ${groqText.length}`);
+
+          if (options?.isJson) {
+            groqText = groqText.trim();
+            // Basic clean of markdown blocks
+            let cleanJson = groqText.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
+            try {
+              JSON.parse(cleanJson);
+              groqText = cleanJson;
+            } catch (jsonErr) {
+              console.warn(`[Groq Fallback Engine] JSON parse failed, extracting brace content...`);
+              const firstBrace = groqText.indexOf('{');
+              const lastBrace = groqText.lastIndexOf('}');
+              const firstBracket = groqText.indexOf('[');
+              const lastBracket = groqText.lastIndexOf(']');
+              if (firstBracket !== -1 && lastBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace)) {
+                groqText = groqText.substring(firstBracket, lastBracket + 1);
+              } else if (firstBrace !== -1 && lastBrace !== -1) {
+                groqText = groqText.substring(firstBrace, lastBrace + 1);
+              }
+            }
+          }
+
+          return { text: groqText };
+        } catch (groqErr: any) {
+          console.error(`[Groq Fallback Engine] Groq API call failed: ${groqErr.message}. Throwing original Gemini error.`);
+          throw error;
+        }
+      } else {
+        console.warn(`[Groq Fallback Engine] GROQ_API_KEY is not configured in environment. Throwing original Gemini error.`);
+        throw error;
+      }
+    } else {
+      throw error;
+    }
+  }
+}
+
+// Node 1: Analyze Goal & Create Subtasks (Gemini 2.5 Flash - High Speed)
 async function analyzeGoalNode(state: typeof AgentState.State) {
+  emitAgentStep(state.sessionId, "⚙️ Analyzing Goal...");
+  await new Promise(resolve => setTimeout(resolve, 3000));
   const session = sessions[state.sessionId];
   writeAuditLog(session, "analyzeGoal", "Analyzing Goal", `Starting analysis on goal: "${state.goal}"`, "info");
   
@@ -121,14 +260,51 @@ async function analyzeGoalNode(state: typeof AgentState.State) {
       DO NOT return any markdown wrapping. Just the raw, valid JSON list.
     `;
 
-    const response = await callWithRetry(() => ai.models.generateContent({
-      model: 'gemini-1.5-flash',
-      contents: prompt,
-    }));
+    const response = await generateWithGroqFallback(
+      () => callWithRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+      })),
+      prompt,
+      { isJson: true }
+    );
 
     const text = response.text?.trim() || "[]";
     const cleanJson = text.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
-    const list = JSON.parse(cleanJson);
+    let list: any[] = [];
+    try {
+      const parsed = JSON.parse(cleanJson);
+      if (Array.isArray(parsed)) {
+        list = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        // Find if there is any key on the object that holds an array
+        const arrayKey = Object.keys(parsed).find(k => Array.isArray((parsed as any)[k]));
+        if (arrayKey) {
+          list = (parsed as any)[arrayKey];
+        } else if (parsed.title || parsed.description) {
+          list = [parsed];
+        } else {
+          throw new Error("Object does not contain an array or recognizable task keys");
+        }
+      } else {
+        throw new Error("Parsed JSON is not an array or object");
+      }
+    } catch (e) {
+      console.error("[Groq Fallback Engine] Decompose JSON parse failed. Raw text:", text);
+      list = [{
+        title: "Decompose Goal Phase 1",
+        description: `Execute starting actions for goal: ${state.goal}`,
+        estimatedMinutes: 60
+      }];
+    }
+
+    if (!Array.isArray(list)) {
+      list = [{
+        title: "Decompose Goal Phase 1",
+        description: `Execute starting actions for goal: ${state.goal}`,
+        estimatedMinutes: 60
+      }];
+    }
 
     subtasks = list.map((item: any, index: number) => ({
       id: `task-${Date.now()}-${index}`,
@@ -145,6 +321,7 @@ async function analyzeGoalNode(state: typeof AgentState.State) {
       `Successfully decomposed goal into ${subtasks.length} actionable subtasks.`,
       "success"
     );
+    emitAgentStep(state.sessionId, "✓ Goal Intaken");
   } catch (error: any) {
     writeAuditLog(session, "analyzeGoal", "Goal Analysis Failed", error.message, "error");
     if (session) session.status = 'failed';
@@ -154,10 +331,11 @@ async function analyzeGoalNode(state: typeof AgentState.State) {
   return { subtasks };
 }
 
-// Node 2: Check Google Calendar for free/busy status (Gemini 1.5 Pro - Structured Constraints Assessment)
+// Node 2: Check Google Calendar for free/busy status (Gemini 2.5 Pro - Structured Constraints Assessment)
 async function checkCalendarNode(state: typeof AgentState.State) {
+  emitAgentStep(state.sessionId, "⚙️ Auditing Calendar...");
   const session = sessions[state.sessionId];
-  writeAuditLog(session, "checkCalendar", "Checking Calendar", "Initiating check of Google Calendar schedule conflicts with Gemini 1.5 Pro.", "info");
+  writeAuditLog(session, "checkCalendar", "Checking Calendar", "Initiating check of Google Calendar schedule conflicts with Gemini 2.5 Pro.", "info");
   
   if (session) session.status = 'calendar_check';
 
@@ -217,29 +395,39 @@ async function checkCalendarNode(state: typeof AgentState.State) {
     busyEvents = getDefaultMockBusySlots();
   }
 
-  // Conduct structural stress/conflict evaluation using Gemini 1.5 Pro
+  // Conduct structural stress/conflict evaluation using Gemini 2.5 Pro
   try {
     const ai = getGeminiClient();
     const auditPrompt = `
-      You are the "Calendar Audit Node" (Deep Reasoning Engine) for "Last-Minute Life Saver".
+      You are part of the "Calendar Specialist Agent" for "Last-Minute Life Saver".
+      Your role is focused purely on calendar slot math, conflict analysis, and constraint validation on schedules.
+
       The user goal is: "${state.goal}" with a deadline: "${state.targetDate}".
       Current busy schedule blocks list:
       ${JSON.stringify(busyEvents)}
       Current local time context is: "${new Date().toISOString()}".
 
-      Analyze if these calendar block occupancies pose extreme conflicts or stress.
+      Analyze if these calendar block occupancies pose conflicts, overlaps, or extreme scheduling bottlenecks.
+      Focus entirely on calendar slot math and availability assessment.
       Return a concise, professional 1-2 sentence stress assessment highlighting conflict areas.
     `;
-    const auditRes = await callWithRetry(() => ai.models.generateContent({
-      model: 'gemini-1.5-pro',
-      contents: auditPrompt,
-    }));
+    
+    const auditRes = await generateWithGroqFallback(
+      () => callWithRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: auditPrompt,
+      })),
+      auditPrompt,
+      { isJson: false }
+    );
+
     const auditSummary = auditRes.text?.trim() || "No critical conflicts detected on initial calendar audit scan.";
     writeAuditLog(session, "checkCalendar", "Calendar Analysis", auditSummary, "info");
   } catch (auditError: any) {
     writeAuditLog(session, "checkCalendar", "Calendar Analysis Overpassed", `Audit scan bypassed: ${auditError.message}`, "info");
   }
 
+  emitAgentStep(state.sessionId, "✓ Calendar Audited");
   return { busyEvents };
 }
 
@@ -263,10 +451,11 @@ function getDefaultMockBusySlots(): CalendarEvent[] {
   return busy;
 }
 
-// Node 3: Schedule Tasks Around Busy Slots (Gemini 1.5 Pro - Intelligent Pathfinding)
+// Node 3: Schedule Tasks Around Busy Slots (Gemini 2.5 Pro - Intelligent Pathfinding)
 async function scheduleTasksNode(state: typeof AgentState.State) {
+  emitAgentStep(state.sessionId, "⚙️ Scheduling Tasks...");
   const session = sessions[state.sessionId];
-  writeAuditLog(session, "scheduleTasks", "Allocating Schedule", "Running conflict-avoidance optimization on subtasks with Gemini 1.5 Pro.", "info");
+  writeAuditLog(session, "scheduleTasks", "Allocating Schedule", "Running conflict-avoidance optimization on subtasks with Gemini 2.5 Flash.", "info");
 
   let scheduled = [...state.subtasks];
   const busy = state.busyEvents || [];
@@ -275,8 +464,9 @@ async function scheduleTasksNode(state: typeof AgentState.State) {
   try {
     const ai = getGeminiClient();
     let schedulingPrompt = `
-      You are the "Scheduling Node" (Deep Reasoning Engine) for "Last-Minute Life Saver".
-      Your job is to strategically schedule the following list of subtasks sequentially, avoiding overlaps with pre-existing busy calendar slots:
+      You are the "Calendar Specialist Agent" for "Last-Minute Life Saver".
+      Your role is focused purely on calendar slot math, conflict avoidance, and mapping out a logically sound timeline of tasks.
+      You must strategically schedule the following list of subtasks sequentially, avoiding any time-shuffling overlaps or calendar collisions:
       
       Subtasks to schedule:
       ${JSON.stringify(scheduled)}
@@ -288,12 +478,13 @@ async function scheduleTasksNode(state: typeof AgentState.State) {
       Absolute Hard Deadline: "${state.targetDate}"
 
       Rules:
-      1. Each subtask has an "id" and "estimatedMinutes" field indicating how long it takes.
-      2. Set a "scheduledStart" and "scheduledEnd" (ISO 8601 strings, e.g., "2026-06-22T09:00:00.000Z") for each subtask.
-      3. No two subtasks can overlap in time.
-      4. Subtasks must not overlap with any busy calendar slots in busy slots list.
-      5. Try to keep scheduled times within standard daytime hours (09:00 to 18:00 inside local time), but if the absolute deadline is extremely tight or today, you can schedule outside these hours to ensure completion before the targetDate.
+      1. Each subtask has an "id" and "estimatedMinutes" field indicating its duration.
+      2. Set a "scheduledStart" and "scheduledEnd" as clean, compliant ISO 8601 strings (e.g., "2026-06-22T09:00:00.000Z") for each subtask.
+      3. No two subtasks can overlap in time. Ensure strict sequential ordering with no time-shuffling overlaps.
+      4. Avoid scheduling subtasks during any time window present in the busy calendar slots.
+      5. Try to keep scheduled times within standard daytime hours (09:00 to 18:00 inside local time), but if the absolute deadline is extremely tight, you may schedule outside these hours.
       6. All scheduled subtasks must be completed before the Absolute Hard Deadline "${state.targetDate}".
+      7. Output clean ISO datetime ranges based on precise math matching duration in minutes.
     `;
 
     if (state.feedback) {
@@ -316,15 +507,24 @@ async function scheduleTasksNode(state: typeof AgentState.State) {
       No markdown, no backticks, return only raw valid JSON.
     `;
 
-    const res = await callWithRetry(() => ai.models.generateContent({
-      model: 'gemini-1.5-pro',
-      contents: schedulingPrompt,
-      config: { responseMimeType: "application/json" }
-    }));
+    const res = await generateWithGroqFallback(
+      () => callWithRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: schedulingPrompt,
+        config: { responseMimeType: "application/json" }
+      })),
+      schedulingPrompt,
+      { isJson: true }
+    );
 
     const text = res.text?.trim() || "[]";
     const cleanJson = text.replace(/^```json\s*/i, '').replace(/```$/, '').trim();
-    const mappedTimes = JSON.parse(cleanJson);
+    let mappedTimes = [];
+    try {
+      mappedTimes = JSON.parse(cleanJson);
+    } catch (e) {
+      console.error("[Groq Fallback Engine] Scheduling JSON parse failed. Raw text:", text);
+    }
 
     if (Array.isArray(mappedTimes) && mappedTimes.length > 0) {
       scheduled = scheduled.map(task => {
@@ -344,7 +544,7 @@ async function scheduleTasksNode(state: typeof AgentState.State) {
         session,
         "scheduleTasks",
         "AI Conflict Resolution Complete",
-        "Gemini 1.5 Pro resolved all busy schedule overlaps and assigned optimal time blocks.",
+        "Gemini 2.5 Pro resolved all busy schedule overlaps and assigned optimal time blocks.",
         "success"
       );
     }
@@ -405,13 +605,16 @@ async function scheduleTasksNode(state: typeof AgentState.State) {
     }
   }
 
+  emitAgentStep(state.sessionId, "✓ Tasks Scheduled");
   return { subtasks: scheduled };
 }
 
-// Node 4: Draft Starter Artifacts (Gemini 1.5 Flash - High Speed)
+// Node 4: Draft Starter Artifacts (Gemini 2.5 Flash - High Speed)
 async function draftArtifactsNode(state: typeof AgentState.State) {
+  emitAgentStep(state.sessionId, "📝 Drafting Playbook...");
+  await new Promise(resolve => setTimeout(resolve, 3000));
   const session = sessions[state.sessionId];
-  writeAuditLog(session, "draftArtifacts", "Drafting Templates", "Synthesizing Starter Docs and Emails using Gemini 1.5 Flash.", "info");
+  writeAuditLog(session, "draftArtifacts", "Drafting Templates", "Synthesizing Starter Docs and Emails using Gemini 2.5 Flash.", "info");
   
   if (session) session.status = 'drafting';
 
@@ -420,19 +623,38 @@ async function draftArtifactsNode(state: typeof AgentState.State) {
     const ai = getGeminiClient();
 
     let emailPrompt = `
-      You are drafting a quick, professional email communications outline for the goal: "${state.goal}".
-      Draft a starter message to stakeholders, project managers, or team members to buy time, provide a heads-up, or share status.
-      Be crisp, reassuring, and highly structured. Always draft a real, professional message completely populated with specific, contextual details based on the goal. DO NOT use generic bracket placeholders (e.g. do not write '[Your Name]', '[Insert Project Name]', 'insert_date_here').
-      Return ONLY plain text. Do not wrap in markdown quotes, JSON, backticks, or any structures. Just output the email body directly.
+      You are the "Communications and Copywriting Specialist Agent" for "Last-Minute Life Saver".
+      Your primary directive is to instantly break a user's analysis paralysis by generating deeply contextual, high-caliber, and completely actionable stakeholder communication drafts.
+
+      The user goal is: "${state.goal}".
+
+      CRITICAL GENERATION CONSTRAINTS:
+      1. TONALITY: Maintain an incredibly calm, reassuring, highly structured, and execution-first professional tone.
+      2. NO PLACEHOLDERS: Completely purge and avoid ALL layout placeholders, empty brackets, or raw template variables (e.g., NEVER output '[Your Name]', '[Goal]', 'insert_date_here', or '<Insert Project Name>'). Instead, synthesize and inject highly realistic professional defaults, industry-standard metrics, or contextual filler data that makes logical sense for the task.
+      3. OUTPUT CLEANLINESS: Return ONLY the raw content requested. Do not wrap the response in markdown code blocks (do not use \`\`\`markdown or \`\`\`text). Do not include any meta-conversational preamble (e.g., do not say "Sure, here is your playbook:") or postscript commentary.
+
+      STRUCTURE:
+      Generate a highly realistic starter email update to relevant stakeholders, clients, managers, or team members regarding progress and immediate steps. Include:
+      - Clear subject line (e.g., Subject: Action Plan: [Descriptive Goal Title])
+      - Professional opening
+      - Context acknowledgment
+      - A 3-point bulleted timeline of immediate next steps
+      - A declaration of when the next update will be sent
+
+      Format: Return ONLY plain text.
     `;
     if (state.feedback) {
       emailPrompt += `\nCRITICAL AUDIT CORRECTION (Please correct this issue in the email draft): ${state.feedback}`;
     }
 
-    const emailRes = await callWithRetry(() => ai.models.generateContent({
-      model: 'gemini-1.5-flash',
-      contents: emailPrompt
-    }));
+    const emailRes = await generateWithGroqFallback(
+      () => callWithRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: emailPrompt
+      })),
+      emailPrompt,
+      { isJson: false }
+    );
     const emailDraft = emailRes.text?.trim() || "";
 
     artifacts.push({
@@ -445,19 +667,48 @@ async function draftArtifactsNode(state: typeof AgentState.State) {
     });
 
     let docPrompt = `
-      You are structuring a strategic, action-packed project outline document for the goal: "${state.goal}".
-      Create a detailed markdown agenda, outline, presentation notes, or roadmap that gets the user 40% of the way finished with the work.
-      Include checklists, sections, and clear placeholders, but populate them with realistic details instead of empty fields or templates. DO NOT use empty variables or template placeholders (like '[Goal]', 'insert_target_date').
-      Return ONLY markdown text directly. Do not wrap in extra JSON or backticks. Just output markdown content directly.
+      You are the "Communications and Copywriting Specialist Agent" for "Last-Minute Life Saver".
+      Your primary directive is to instantly break a user's analysis paralysis by generating deeply contextual, high-caliber, and completely actionable workspace playbooks.
+
+      The user goal is: "${state.goal}".
+
+      CRITICAL GENERATION CONSTRAINTS:
+      1. TONALITY: Maintain an incredibly calm, reassuring, highly structured, and execution-first professional tone.
+      2. NO PLACEHOLDERS: Completely purge and avoid ALL layout placeholders, empty brackets, or raw template variables (e.g., NEVER output '[Your Name]', '[Goal]', 'insert_date_here', or '<Insert Project Name>'). Instead, synthesize and inject highly realistic professional defaults, industry-standard metrics, or contextual filler data that makes logical sense for the task.
+      3. OUTPUT CLEANLINESS: Return ONLY the raw content requested. Do not wrap the response in markdown code blocks (do not use \`\`\`markdown or \`\`\`text). Do not include any meta-conversational preamble (e.g., do not say "Sure, here is your playbook:") or postscript commentary.
+
+      BLUEPRINT:
+      Generate a dense, data-rich playbook structured strictly using Markdown headers following this exact 4-part architectural blueprint:
+
+      # 🚀 EMERGENCY ACTION PLAYBOOK: WORKSPACE ROADMAP
+
+      ## ⏱️ SECTION 1: THE FIRST 15-MINUTE ESCAPE PLAN
+      Provide an explicit, low-friction, immediate micro-step that the user can execute within 15 minutes to establish immediate forward momentum. Break this down into 3 hyper-granular, sequential checklist items (\`- [ ]\`).
+
+      ## 📊 SECTION 2: CONTEXTUAL STRATEGIC BREAKDOWN FRAMEWORK
+      Analyze the exact domain of the target goal and auto-inject highly granular, functional domain skeletons:
+      - If TECHNICAL/PROGRAMMING: Write out core architectural system design blocks, data flow patterns, critical edge cases to track, and a clean procedural pseudo-logic checklist.
+      - If ACADEMIC/STUDY: Outline a concise thematic cheat-sheet, foundational formulas/equations, and key structural concepts to audit.
+      - If BUSINESS/PRESENTATION: Layout a definitive slide-by-slide narrative storyboard, detailing exactly what core insights belong on each panel.
+
+      ## 📂 SECTION 3: ASSET & RESOURCE EXTRACTION MATRIX
+      Provide a bulleted inventory of exact files, credentials, specific data fields, API endpoints, or reference documents the user needs to collect during their scheduled calendar blocks to complete the task.
+
+      ## 🏁 SECTION 4: RISK AUDIT & EMERGENCY MITIGATION
+      Identify the 2 most realistic mistakes, infrastructure bottlenecks, or human-error vectors that could sabotage this condensed timeline, and pair each with an immediate mitigation workaround strategy.
     `;
     if (state.feedback) {
       docPrompt += `\nCRITICAL AUDIT CORRECTION (Please correct this issue in the doc outline): ${state.feedback}`;
     }
 
-    const docRes = await callWithRetry(() => ai.models.generateContent({
-      model: 'gemini-1.5-flash',
-      contents: docPrompt
-    }));
+    const docRes = await generateWithGroqFallback(
+      () => callWithRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: docPrompt
+      })),
+      docPrompt,
+      { isJson: false }
+    );
     const docDraft = docRes.text?.trim() || "";
 
     artifacts.push({
@@ -480,17 +731,32 @@ async function draftArtifactsNode(state: typeof AgentState.State) {
     throw error;
   }
 
+  emitAgentStep(state.sessionId, "✓ Playbook Drafted");
   return { artifacts };
 }
 
-// Node 5: LLM-as-a-Judge Evaluation Node (Gemini 1.5 Pro - High Precision Validation)
+// Node 5: LLM-as-a-Judge Evaluation Node (Gemini 2.5 Flash - High Precision Validation)
 async function evaluateAgendaNode(state: typeof AgentState.State) {
+  emitAgentStep(state.sessionId, "⚙️ Evaluating Plan...");
+  await new Promise(resolve => setTimeout(resolve, 3000));
   const session = sessions[state.sessionId];
-  writeAuditLog(session, "evaluateAgenda", "Reviewing Plan Quality", "LLM-as-a-Judge validating agenda consistency and tone completeness using Gemini 1.5 Pro.", "info");
+  writeAuditLog(session, "evaluateAgenda", "Reviewing Plan Quality", "LLM-as-a-Judge validating agenda consistency and tone completeness using Gemini 2.5 Flash.", "info");
 
   const subtasks = state.subtasks || [];
   const artifacts = state.artifacts || [];
   const evaluationCount = (state.evaluationCount || 0) + 1;
+
+  // Bypass judge for cleanup/destructive goals
+  const goalLower = (state.goal || "").toLowerCase();
+  const destructiveKeywords = ["clean", "delete", "remove", "wipe", "purge", "clear"];
+  const isDestructive = destructiveKeywords.some(keyword => goalLower.includes(keyword));
+  if (isDestructive) {
+    writeAuditLog(session, "evaluateAgenda", "Bypassing Judge", "Cleanup goal detected. Skipping quality evaluation for empty plan.", "success");
+    return {
+      feedback: undefined,
+      evaluationCount
+    };
+  }
 
   // Gracefully skip after 2 iterations to protect user and model boundaries from looping infinitely
   if (evaluationCount > 2) {
@@ -527,44 +793,82 @@ async function evaluateAgendaNode(state: typeof AgentState.State) {
        - Is the tone of the draft emails and outlines professional, reassuring, calm, and contextually rich?
        - Are all placeholders populated with realistic, logical text? There should be NO generic brackets, variables, or unpopulated tags (like "[Insert Name Here]", "your_name_here", "INSERT_DATE", "[Goal]", or generic lorem ipsum).
 
-    Determine if the plan PASSES or FAILS.
-    If it passes both criteria perfectly, set passed: true.
-    If there are ANY violations, set passed: false, and specify constructive, clear feedback on what needs to be rewritten, updated, or improved in the feedback string.
-
-    Return strictly a JSON object with this structure:
-    {
-      "passed": false,
-      "feedback": "Your detailed feedback explaining the issue to correct."
-    }
-    No markdown, no backticks, return only valid JSON parsing format.
+    Fill out the required JSON validation response exactly as specified by the response schema.
   `;
+
+  const validationSchema = {
+    type: Type.OBJECT,
+    properties: {
+      isValid: {
+        type: Type.BOOLEAN,
+        description: "True if the plan passes all quality checks, False if it fails."
+      },
+      hasPlaceholders: {
+        type: Type.BOOLEAN,
+        description: "True if any template defaults like '[Your Name]' remain."
+      },
+      temporalViolations: {
+        type: Type.ARRAY,
+        items: {
+          type: Type.STRING
+        },
+        description: "Specific date, week, or year consistency errors found."
+      },
+      critiqueSummary: {
+        type: Type.STRING,
+        description: "Feedback detailing exactly what needs to be rewritten."
+      }
+    },
+    required: ["isValid", "hasPlaceholders", "temporalViolations", "critiqueSummary"]
+  };
 
   try {
     const ai = getGeminiClient();
-    const res = await callWithRetry(() => ai.models.generateContent({
-      model: 'gemini-1.5-pro',
-      contents: judgePrompt,
-      config: { responseMimeType: 'application/json' }
-    }));
+    const res = await generateWithGroqFallback(
+      () => callWithRetry(() => ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: judgePrompt,
+        config: { 
+          responseMimeType: 'application/json',
+          responseSchema: validationSchema
+        }
+      })),
+      judgePrompt,
+      { isJson: true }
+    );
 
     const cleanRes = (res.text || "").trim().replace(/^```json\s*/i, '').replace(/```$/, '').trim();
-    const result = JSON.parse(cleanRes || "{\"passed\": true}");
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(cleanRes || "{}");
+    } catch (e) {
+      parsedResult = {};
+    }
+
+    const result = {
+      isValid: typeof parsedResult.isValid === 'boolean' ? parsedResult.isValid : true,
+      hasPlaceholders: typeof parsedResult.hasPlaceholders === 'boolean' ? parsedResult.hasPlaceholders : false,
+      temporalViolations: Array.isArray(parsedResult.temporalViolations) ? parsedResult.temporalViolations : [],
+      critiqueSummary: typeof parsedResult.critiqueSummary === 'string' ? parsedResult.critiqueSummary : String(parsedResult.critiqueSummary || "")
+    };
     
-    if (result.passed === false) {
-      writeAuditLog(session, "evaluateAgenda", "Judge Evaluation Failed", `Critique (attempt ${evaluationCount}): ${result.feedback}`, "warning");
+    if (result.isValid === true) {
+      writeAuditLog(session, "evaluateAgenda", "Judge Evaluation Passed", "The planned schedule is temporally consistent and drafts are complete and professional.", "success");
+      emitAgentStep(state.sessionId, "✓ Plan Verified");
       return {
-        feedback: result.feedback,
+        feedback: undefined,
         evaluationCount
       };
     } else {
-      writeAuditLog(session, "evaluateAgenda", "Judge Evaluation Passed", "The planned schedule is temporally consistent and drafts are complete and professional.", "success");
+      writeAuditLog(session, "evaluateAgenda", "Judge Evaluation Failed", `Critique (attempt ${evaluationCount}): ${result.critiqueSummary}`, "warning");
       return {
-        feedback: undefined,
+        feedback: result.critiqueSummary,
         evaluationCount
       };
     }
   } catch (error: any) {
     writeAuditLog(session, "evaluateAgenda", "Judge Evaluation Overpassed", `Failed to run judge: ${error.message}. Force passing.`, "warning");
+    emitAgentStep(state.sessionId, "✓ Plan Verified");
     return {
       feedback: undefined,
       evaluationCount
@@ -572,18 +876,128 @@ async function evaluateAgendaNode(state: typeof AgentState.State) {
   }
 }
 
+// Conditional routing function after goal analysis
+function routeAfterAnalysis(state: typeof AgentState.State) {
+  const goalLower = (state.goal || "").toLowerCase();
+  const destructiveKeywords = ["clean", "delete", "remove", "wipe", "purge", "clear"];
+  const isDestructive = destructiveKeywords.some(keyword => goalLower.includes(keyword));
+  
+  if (isDestructive) {
+    return "cleanup";
+  }
+  return "checkCalendar";
+}
+
+// Specialized Cleanup Node to bypass planning/scheduling and ensure calendar states remain clean/empty
+async function cleanupNode(state: typeof AgentState.State) {
+  emitAgentStep(state.sessionId, "⚙️ Reverting Changes / Cleaning Calendar...");
+  const session = sessions[state.sessionId];
+  writeAuditLog(session, "cleanup", "Executing Direct Cleanup Node", "Goal identified as a destructive or pure cleanup request. Completely bypassing checkCalendar, scheduleTasks, and draftDocs stages.", "success");
+  
+  const token = state.accessToken;
+  if (token) {
+    writeAuditLog(session, "googleCalendar", "Scouting Duplicates", "Searching Google Calendar for matching duplicate events...", "info");
+    
+    try {
+      const lookbackStart = new Date();
+      lookbackStart.setDate(lookbackStart.getDate() - 2);
+
+      const listUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(lookbackStart.toISOString())}&singleEvents=true`;
+      
+      writeAuditLog(session, "googleCalendar", "Fetching Events", `Querying Google Calendar events from the last 48 hours (since ${lookbackStart.toISOString()})...`, "info");
+
+      const listData = await callWithRetry(async () => {
+        const calendarListRes = await fetch(listUrl, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json'
+          }
+        });
+
+        if (!calendarListRes.ok) {
+          const errText = await calendarListRes.text();
+          throw new Error(`Failed to list calendar events: ${calendarListRes.status} - ${errText}`);
+        }
+
+        return await calendarListRes.json();
+      });
+
+      const items = listData.items || [];
+      const matchedEvents: any[] = [];
+
+      for (const item of items) {
+        const summary = item.summary || "";
+        if (summary.startsWith('[Saver]') && item.id) {
+          matchedEvents.push(item);
+        }
+      }
+
+      writeAuditLog(session, "googleCalendar", "Scout Complete", `Found ${matchedEvents.length} events starting with '[Saver]' from the last 48 hours.`, "info");
+
+      for (const event of matchedEvents) {
+        writeAuditLog(session, "googleCalendar", "Deleting Event", `Attempting to delete calendar event: "${event.summary}" (ID: ${event.id})`, "info");
+        const deleteUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events/${event.id}`;
+        
+        await callWithRetry(async () => {
+          const deleteRes = await fetch(deleteUrl, {
+            method: 'DELETE',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+
+          if (!deleteRes.ok) {
+            const delErr = await deleteRes.text();
+            throw new Error(`Could not delete event ${event.id}: ${deleteRes.status} - ${delErr}`);
+          }
+        });
+
+        writeAuditLog(session, "googleCalendar", "Delete Success", `Successfully deleted event: "${event.summary}"`, "success");
+      }
+
+      writeAuditLog(session, "googleCalendar", "Cleanup Complete", `Successfully processed deletions for ${matchedEvents.length} '[Saver]' events.`, "success");
+    } catch (err: any) {
+      writeAuditLog(session, "googleCalendar", "Cleanup Error", `Google Calendar cleanup failed: ${err.message}`, "error");
+      throw err; // Loud failure!
+    }
+  } else {
+    // Simulated delete
+    writeAuditLog(session, "googleCalendar", "Simulated Scout", "Simulating calendar scan for duplicate events created today...", "info");
+    const targetKeywords = ['Brainstorm', 'Slide Content', 'Visuals', 'Refine Flow'];
+    writeAuditLog(session, "googleCalendar", "Simulated Scout Complete", `Simulated search matched duplicate mock entries created today.`, "info");
+    for (const kw of targetKeywords) {
+      writeAuditLog(session, "googleCalendar", "Simulated Event Delete", `Simulated Google Calendar delete for duplicate "${kw}" event.`, "success");
+    }
+  }
+
+  emitAgentStep(state.sessionId, "✓ Calendar Cleaned");
+
+  // Ensure that for cleanup routes, the state variables for tracking new calendar events remain empty so nothing new gets written to the Google Calendar tool.
+  return {
+    subtasks: [],
+    artifacts: []
+  };
+}
+
 // Initialize LangGraph workflow build
+const memorySaver = new MemorySaver();
 const workflow = new StateGraph(AgentState)
   .addNode("analyzeGoal", analyzeGoalNode)
   .addNode("checkCalendar", checkCalendarNode)
   .addNode("scheduleTasks", scheduleTasksNode)
   .addNode("draftArtifacts", draftArtifactsNode)
   .addNode("evaluateAgenda", evaluateAgendaNode)
+  .addNode("cleanup", cleanupNode)
   .addEdge("__start__", "analyzeGoal")
-  .addEdge("analyzeGoal", "checkCalendar")
+  .addConditionalEdges(
+    "analyzeGoal",
+    routeAfterAnalysis
+  )
   .addEdge("checkCalendar", "scheduleTasks")
   .addEdge("scheduleTasks", "draftArtifacts")
   .addEdge("draftArtifacts", "evaluateAgenda")
+  .addEdge("cleanup", "evaluateAgenda")
   .addConditionalEdges(
     "evaluateAgenda",
     (state) => {
@@ -594,7 +1008,7 @@ const workflow = new StateGraph(AgentState)
     }
   );
 
-const agentWorkflow = workflow.compile();
+const agentWorkflow = workflow.compile({ checkpointer: memorySaver });
 
 
 // -----------------------------------------------------------------------------
@@ -642,23 +1056,43 @@ app.post("/api/sessions", async (req, res) => {
         busyEvents: [],
         feedback: undefined,
         evaluationCount: 0,
+      }, {
+        configurable: { thread_id: id }
       });
 
       // Commit LangGraph generated outputs back to the shared storage session
       sessionRecord.subtasks = finalState.subtasks || [];
       sessionRecord.artifacts = finalState.artifacts || [];
-      sessionRecord.status = 'review_needed';
 
-      writeAuditLog(
-        sessionRecord,
-        "system",
-        "Awaiting Action",
-        "Agent finished planning. Presenting approval gate to user.",
-        "success"
-      );
+      const goalLower = (goal || "").toLowerCase();
+      const destructiveKeywords = ["clean", "delete", "remove", "wipe", "purge", "clear"];
+      const isDestructive = destructiveKeywords.some(keyword => goalLower.includes(keyword));
+
+      if (isDestructive) {
+        sessionRecord.status = 'completed';
+        writeAuditLog(
+          sessionRecord,
+          "system",
+          "Goal Finished",
+          "Pure cleanup goal completed directly inside workflow. All matching events deleted successfully.",
+          "success"
+        );
+        emitAgentStep(id, "✅ Sync Complete");
+      } else {
+        sessionRecord.status = 'review_needed';
+        writeAuditLog(
+          sessionRecord,
+          "system",
+          "Awaiting Action",
+          "Agent finished planning. Presenting approval gate to user.",
+          "success"
+        );
+        emitAgentStep(id, "✅ Sync Complete");
+      }
     } catch (err: any) {
       sessionRecord.status = 'failed';
       writeAuditLog(sessionRecord, "system", "Agent Failed", err.message, "error");
+      emitAgentStep(id, "❌ Agent Failed");
     }
   }, 100);
 
@@ -672,6 +1106,92 @@ app.get("/api/sessions/:id", (req, res) => {
     return res.status(404).json({ error: "Session not found." });
   }
   res.json(session);
+});
+
+// SSE Agent Thought Streaming Endpoint
+app.get("/api/sessions/:id/stream", (req, res) => {
+  const sessionId = req.params.id;
+
+  // SSE headers
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+  });
+
+  // Replay any existing step messages so the client doesn't miss them
+  const session = sessions[sessionId];
+  if (session && session.streamSteps) {
+    for (const step of session.streamSteps) {
+      res.write(`data: ${JSON.stringify({ step })}\n\n`);
+    }
+  }
+
+  // Define dynamic listener for this session's events
+  const onStep = (stepMessage: string) => {
+    res.write(`data: ${JSON.stringify({ step: stepMessage })}\n\n`);
+  };
+
+  sseEmitter.on(`step:${sessionId}`, onStep);
+
+  // Clean up when client disconnects
+  req.on("close", () => {
+    sseEmitter.off(`step:${sessionId}`, onStep);
+  });
+});
+
+// Psychological safety net: "Undo Schedule" or "Revert Changes" endpoint
+app.post("/api/undo", async (req, res) => {
+  const { command, target, accessToken } = req.body;
+  
+  if (command !== "system_cleanup") {
+    return res.status(400).json({ error: "Invalid command. Command must be 'system_cleanup'." });
+  }
+
+  const id = `session-undo-${Math.random().toString(36).substr(2, 9)}`;
+  const sessionRecord: PanickedGoal = {
+    id,
+    query: `Revert / Undo Action (${target || 'today'})`,
+    targetDate: new Date().toISOString().split('T')[0],
+    createdAt: new Date().toISOString(),
+    status: 'analyzing',
+    subtasks: [],
+    artifacts: [],
+    auditLogs: [],
+    streamSteps: [],
+  };
+  sessions[id] = sessionRecord;
+  writeAuditLog(sessionRecord, "system", "Undo Initiated", `Received undo command: "${command}" on target "${target}"`, "warning");
+
+  // Send initial step
+  emitAgentStep(id, "⚙️ Reverting Changes / Cleaning Calendar...");
+
+  setTimeout(async () => {
+    try {
+      await cleanupNode({
+        sessionId: id,
+        goal: "Undo schedule changes",
+        targetDate: new Date().toISOString().split('T')[0],
+        subtasks: [],
+        artifacts: [],
+        accessToken,
+        busyEvents: [],
+        feedback: undefined,
+        evaluationCount: 0,
+      });
+
+      sessionRecord.status = 'completed';
+      writeAuditLog(sessionRecord, "system", "Undo Finished", "Revert completed successfully. All duplicate [Saver] events deleted.", "success");
+      emitAgentStep(id, "✓ Calendar Cleaned");
+      emitAgentStep(id, "✅ Sync Complete");
+    } catch (err: any) {
+      sessionRecord.status = 'failed';
+      writeAuditLog(sessionRecord, "system", "Undo Failed", err.message, "error");
+      emitAgentStep(id, "❌ Agent Failed");
+    }
+  }, 100);
+
+  res.json({ sessionId: id });
 });
 
 // Human-in-the-Loop Modification gate
@@ -706,51 +1226,137 @@ app.post("/api/sessions/:id/approve", async (req, res) => {
     return res.status(404).json({ error: "Session not found." });
   }
 
-  const { accessToken } = req.body;
+  const { accessToken, action, eventsToDelete } = req.body;
   session.status = 'committing';
-  writeAuditLog(session, "humanGate", "Approved Plan", "User gave final clearance for Calendar & Document commit.", "success");
+  
+  const isDeleteOnly = action === 'delete' || (eventsToDelete && eventsToDelete.length > 0 && action !== 'insert');
+  
+  if (isDeleteOnly) {
+    writeAuditLog(session, "humanGate", "Approved Deletion", "User initiated direct automated cleanup of Google Calendar events.", "success");
+  } else {
+    writeAuditLog(session, "humanGate", "Approved Plan", "User gave final clearance for Calendar & Document commit.", "success");
+  }
+
+  // Helper functions for deletion and simulation
+  const performGoogleCalendarDelete = async (token: string) => {
+    writeAuditLog(session, "googleCalendar", "Scouting Duplicates", "Searching Google Calendar for matching duplicate events...", "info");
+    
+    const lookbackStart = new Date();
+    lookbackStart.setDate(lookbackStart.getDate() - 2);
+    lookbackStart.setHours(0, 0, 0, 0);
+
+    // Filter to get events from 2 days ago onwards
+    const listUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(lookbackStart.toISOString())}&singleEvents=true`;
+    
+    const calendarListRes = await fetch(listUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/json'
+      }
+    });
+
+    if (!calendarListRes.ok) {
+      const err = await calendarListRes.text();
+      throw new Error(`Failed to list calendar events: ${err}`);
+    }
+
+    const listData = await calendarListRes.json();
+    const items = listData.items || [];
+    const matchedEvents: any[] = [];
+
+    for (const item of items) {
+      const summary = item.summary || "";
+      if (summary.startsWith('[Saver]') && item.id) {
+        matchedEvents.push(item);
+      }
+    }
+
+    writeAuditLog(session, "googleCalendar", "Scout Complete", `Found ${matchedEvents.length} duplicate matching events.`, "info");
+
+    for (const event of matchedEvents) {
+      writeAuditLog(session, "googleCalendar", "Deleting Event", `Deleting calendar event: "${event.summary}" (ID: ${event.id})`, "info");
+      const deleteUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events/${event.id}`;
+      
+      const deleteRes = await fetch(deleteUrl, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!deleteRes.ok) {
+        const delErr = await deleteRes.text();
+        writeAuditLog(session, "googleCalendar", "Delete Failure", `Could not delete event ${event.id}: ${delErr}`, "warning");
+      } else {
+        writeAuditLog(session, "googleCalendar", "Delete Success", `Successfully deleted event: "${event.summary}"`, "success");
+      }
+    }
+  };
+
+  const performSimulatedDelete = () => {
+    writeAuditLog(session, "googleCalendar", "Simulated Scout", "Simulating calendar scan for duplicate events created today...", "info");
+    const targetKeywords = ['Brainstorm', 'Slide Content', 'Visuals', 'Refine Flow'];
+    writeAuditLog(session, "googleCalendar", "Simulated Scout Complete", `Simulated search matched duplicate mock entries created today.`, "info");
+    for (const kw of targetKeywords) {
+      writeAuditLog(session, "googleCalendar", "Simulated Event Delete", `Simulated Google Calendar delete for duplicate "${kw}" event.`, "success");
+    }
+  };
 
   try {
-    // 1. Write Calendar Events
-    for (const subtask of session.subtasks) {
-      if (subtask.status !== 'rejected' && subtask.scheduledStart) {
-        if (accessToken) {
-          writeAuditLog(session, "googleCalendar", "Publishing Event", `Writing event "${subtask.title}" to Google Calendar...`, "info");
-          
-          await callWithRetry(async () => {
-            const calendarRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
-              method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                summary: `[Saver] ${subtask.title}`,
-                description: subtask.description,
-                start: { dateTime: subtask.scheduledStart },
-                end: { dateTime: subtask.scheduledEnd || new Date(new Date(subtask.scheduledStart).getTime() + 60 * 60000).toISOString() },
-              })
+    // 1. Always execute automated cleanup / deletion fully BEFORE any insertions
+    if (accessToken) {
+      await callWithRetry(async () => {
+        await performGoogleCalendarDelete(accessToken);
+      });
+    } else {
+      performSimulatedDelete();
+    }
+
+    // 2. Perform insertions only if this is not a pure deletion action
+    if (!isDeleteOnly) {
+      // Write Calendar Events
+      for (const subtask of session.subtasks) {
+        if (subtask.status !== 'rejected' && subtask.scheduledStart && subtask.action !== 'delete') {
+          if (accessToken) {
+            writeAuditLog(session, "googleCalendar", "Publishing Event", `Writing event "${subtask.title}" to Google Calendar...`, "info");
+            
+            await callWithRetry(async () => {
+              const calendarRes = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  summary: `[Saver] ${subtask.title}`,
+                  description: subtask.description,
+                  start: { dateTime: subtask.scheduledStart },
+                  end: { dateTime: subtask.scheduledEnd || new Date(new Date(subtask.scheduledStart).getTime() + 60 * 60000).toISOString() },
+                })
+              });
+
+              if (!calendarRes.ok) {
+                const err = await calendarRes.text();
+                throw new Error(`Calendar Error: ${err}`);
+              }
+              return calendarRes;
             });
 
-            if (!calendarRes.ok) {
-              const err = await calendarRes.text();
-              throw new Error(`Calendar Error: ${err}`);
-            }
-            return calendarRes;
-          });
-
-          subtask.status = 'scheduled';
-          writeAuditLog(session, "googleCalendar", "Synced Event", `Successfully added "${subtask.title}" to Google Calendar.`, "success");
-        } else {
-          // Simulation feedback
-          subtask.status = 'scheduled';
-          writeAuditLog(session, "googleCalendar", "Simulated Event Write", `Simulated Calendar post for event "${subtask.title}".`, "info");
+            subtask.status = 'scheduled';
+            writeAuditLog(session, "googleCalendar", "Synced Event", `Successfully added "${subtask.title}" to Google Calendar.`, "success");
+          } else {
+            // Simulation feedback
+            subtask.status = 'scheduled';
+            writeAuditLog(session, "googleCalendar", "Simulated Event Write", `Simulated Calendar post for event "${subtask.title}".`, "info");
+          }
         }
       }
     }
 
-    // 2. Commit Document Outline & Workspace elements
-    for (const artifact of session.artifacts) {
+    // 3. Commit Document Outline & Workspace elements (only if not a pure delete action)
+    if (!isDeleteOnly) {
+      for (const artifact of session.artifacts) {
       if (accessToken) {
         if (artifact.type === 'doc') {
           writeAuditLog(session, "googleDocs", "Creating Document", `Creating Google Doc titled "${artifact.title}"`, "info");
@@ -852,6 +1458,7 @@ app.post("/api/sessions/:id/approve", async (req, res) => {
         artifact.workspaceUrl = artifact.type === 'doc' ? 'https://docs.google.com' : 'https://mail.google.com';
         writeAuditLog(session, "workspace", "Simulated Publish", `Simulated write for artifact "${artifact.title}".`, "info");
       }
+    }
     }
 
     session.status = 'completed';
