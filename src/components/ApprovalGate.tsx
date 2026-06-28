@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { PanickedGoal, Subtask, StarterArtifact } from '../types';
-import { Edit3, Check, Calendar, Mail, FileText, Trash2, CheckCircle2, RotateCcw, Play, AlertTriangle, ExternalLink } from 'lucide-react';
+import { Edit3, Check, Calendar, Mail, FileText, Trash2, CheckCircle2, RotateCcw, Play, AlertTriangle, ExternalLink, BookmarkPlus, Repeat, Bookmark, Send } from 'lucide-react';
 
 interface ApprovalGateProps {
   session: PanickedGoal;
@@ -30,6 +30,20 @@ export default function ApprovalGate({
   const [tempArtRecipient, setTempArtRecipient] = useState('');
 
   const [showConfirmPopup, setShowConfirmPopup] = useState(false);
+  const [isTracked, setIsTracked] = useState(false);
+  const [recurrence, setRecurrence] = useState<'none' | 'daily' | 'weekly' | 'monthly'>('none');
+
+  const handleTrackToggle = () => {
+    const newTracked = !isTracked;
+    setIsTracked(newTracked);
+    if (!newTracked) setRecurrence('none');
+  };
+
+  // Email Reminder State
+  const [reminderEmail, setReminderEmail] = useState('');
+  const [isSendingReminder, setIsSendingReminder] = useState(false);
+  const [reminderSent, setReminderSent] = useState(false);
+
 
   // ---------------------------------------------------------------------------
   // Task Editing Helpers
@@ -109,6 +123,26 @@ export default function ApprovalGate({
 
   const activeSubtasksCount = session.subtasks.filter((t) => t.status !== 'rejected').length;
 
+  const handleSendReminder = async () => {
+    if (!reminderEmail || !reminderEmail.includes('@')) return;
+    setIsSendingReminder(true);
+    try {
+      const res = await fetch('/api/remind', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: reminderEmail,
+          subject: `Goal Reminder: ${session.goal}`,
+          text: `You set a goal to: "${session.goal}".\n\nMake sure you complete it by ${new Date(session.targetDate).toLocaleString()}!\n\nThis is an automated reminder from Last-Minute Life Saver.`,
+        }),
+      });
+      if (res.ok) setReminderSent(true);
+    } catch (e) {
+      console.error("Failed to send reminder email", e);
+    }
+    setIsSendingReminder(false);
+  };
+
   return (
     <div className="bg-white rounded-3xl border-2 border-orange-200 shadow-md overflow-hidden space-y-6 relative">
       {/* Top Banner Accent Indicator */}
@@ -139,6 +173,96 @@ export default function ApprovalGate({
             <CheckCircle2 className="h-4 w-4" />
             Clear Plan & Sync ({activeSubtasksCount} Items)
           </button>
+        </div>
+      </div>
+
+      {/* Track This Goal Toggle */}
+      <div className={`mx-6 px-4 py-3 rounded-xl border transition-all duration-300 ${
+        isTracked ? 'border-purple-200 bg-purple-50/40' : 'border-gray-150 bg-gray-50/40'
+      }`}>
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-2.5">
+            <div className={`p-1.5 rounded-lg transition-colors ${ isTracked ? 'bg-purple-500 text-white' : 'bg-gray-200 text-gray-500' }`}>
+              <Bookmark className="h-3.5 w-3.5" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-gray-800">Track this goal as a recurring habit</p>
+              <p className="text-[10px] text-gray-500 mt-0.5">Saves to your habit history and shows a recurrence reminder</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            {isTracked && (
+              <div className="flex items-center gap-1.5">
+                <Repeat className="h-3 w-3 text-purple-500" />
+                <select
+                  value={recurrence}
+                  onChange={e => setRecurrence(e.target.value as any)}
+                  className="text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-200 rounded-lg px-2 py-1 focus:outline-none focus:border-purple-400"
+                >
+                  <option value="none">One-time</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+            )}
+            {/* Toggle Switch */}
+            <button
+              onClick={handleTrackToggle}
+              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                isTracked ? 'bg-purple-500' : 'bg-gray-300'
+              }`}
+            >
+              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                isTracked ? 'translate-x-4' : 'translate-x-1'
+              }`} />
+            </button>
+          </div>
+        </div>
+        {isTracked && (
+          <div className="mt-2.5 pt-2.5 border-t border-purple-100 flex items-center gap-1.5">
+            <CheckCircle2 className="h-3 w-3 text-purple-500" />
+            <span className="text-[10px] font-semibold text-purple-700">
+              ✓ Will be saved to your habit dashboard{recurrence !== 'none' ? ` · Recurs ${recurrence}` : ' · One-time log'}
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Email Reminder Section */}
+      <div className="mx-6 px-4 py-3 rounded-xl border border-blue-150 bg-blue-50/30 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 rounded-lg bg-blue-100 text-blue-600">
+            <Send className="h-3.5 w-3.5" />
+          </div>
+          <div>
+            <p className="text-xs font-bold text-gray-800">Send an email reminder</p>
+            <p className="text-[10px] text-gray-500 mt-0.5">We'll email you a copy of this goal right now.</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          {reminderSent ? (
+            <span className="text-xs font-bold text-emerald-600 flex items-center gap-1 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-100">
+              <CheckCircle2 className="h-3.5 w-3.5" /> Sent!
+            </span>
+          ) : (
+            <>
+              <input
+                type="email"
+                placeholder="your@email.com"
+                value={reminderEmail}
+                onChange={(e) => setReminderEmail(e.target.value)}
+                className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-blue-300 flex-1 sm:w-48"
+              />
+              <button
+                onClick={handleSendReminder}
+                disabled={isSendingReminder || !reminderEmail.includes('@')}
+                className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-sm"
+              >
+                {isSendingReminder ? 'Sending...' : 'Remind Me'}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -462,6 +586,21 @@ export default function ApprovalGate({
               <button
                 onClick={() => {
                   setShowConfirmPopup(false);
+                  // Save habit tracking to localStorage if toggled on
+                  if (isTracked) {
+                    const key = 'lmls_past_sessions';
+                    const existing = JSON.parse(localStorage.getItem(key) || '[]');
+                    const entry = {
+                      id: session.id,
+                      goal: session.query,
+                      date: session.targetDate,
+                      timestamp: Date.now(),
+                      tracked: true,
+                      recurrence,
+                    };
+                    const updated = [entry, ...existing.filter((e: any) => e.id !== session.id)].slice(0, 5);
+                    localStorage.setItem(key, JSON.stringify(updated));
+                  }
                   onApprove();
                 }}
                 className="px-4 py-1.5 bg-orange-500 text-white hover:bg-orange-650 text-[11px] font-bold rounded-lg shadow-sm"
