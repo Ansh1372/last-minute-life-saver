@@ -1332,11 +1332,11 @@ app.post("/api/remind", async (req, res) => {
       text,
     });
 
-    writeAuditLog(null, "remind", "Email Sent", \`Reminder sent to \${to}\`, "success");
+    writeAuditLog(null, "remind", "Email Sent", `Reminder sent to ${to}`, "success");
     res.json({ success: true, message: "Reminder email sent successfully." });
   } catch (err: any) {
     writeAuditLog(null, "remind", "Email Failed", err.message, "error");
-    res.status(500).json({ error: \`Failed to send email: \${err.message}\` });
+    res.status(500).json({ error: `Failed to send email: ${err.message}` });
   }
 });
 
