@@ -8,6 +8,7 @@ import PlanningProgress from './components/PlanningProgress';
 import ApprovalGate from './components/ApprovalGate';
 import AuditLogView from './components/AuditLogView';
 import OAuthModal from './components/OAuthModal';
+import ThoughtStream from './components/ThoughtStream';
 import { CheckCircle2, Clock, Calendar, ExternalLink, AlertTriangle, Play, CornerUpLeft, BookOpen, RefreshCw, Sparkles, HelpCircle } from 'lucide-react';
 
 export default function App() {
@@ -56,10 +57,19 @@ export default function App() {
   // Fetch Global Auditor logs
   const fetchLogs = async () => {
     try {
-      const res = await fetch("/api/audit-logs");
+      const res = await fetch("/api/audit-logs", {
+        headers: {
+          "Accept": "application/json"
+        }
+      });
       if (res.ok) {
-        const data = await res.json();
-        setGlobalLogs(data.logs || []);
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          setGlobalLogs(data.logs || []);
+        } else {
+          console.warn("Audit logs returned non-JSON content-type:", contentType);
+        }
       }
     } catch (err) {
       console.error("Failed to sync audit logs:", err);
@@ -81,14 +91,21 @@ export default function App() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/sessions/${session.id}`);
+        const res = await fetch(`/api/sessions/${session.id}`, {
+          headers: {
+            "Accept": "application/json"
+          }
+        });
         if (res.ok) {
-          const updated = await res.json();
-          setSession(updated);
+          const contentType = res.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const updated = await res.json();
+            setSession(updated);
 
-          if (['completed', 'review_needed', 'failed'].includes(updated.status)) {
-            setIsLoading(false);
-            clearInterval(interval);
+            if (['completed', 'review_needed', 'failed'].includes(updated.status)) {
+              setIsLoading(false);
+              clearInterval(interval);
+            }
           }
         }
       } catch (err) {
@@ -255,8 +272,11 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
                 transition={{ duration: 0.25 }}
+                className="space-y-6"
               >
                 <GoalIntake onSubmit={handleStartPlanning} isLoading={isLoading} />
+                
+
               </motion.div>
             ) : ['analyzing', 'calendar_check', 'drafting'].includes(session.status) ? (
               /* PLANS PROGRESS MONITORING STATE */
@@ -266,8 +286,10 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
                 transition={{ duration: 0.25 }}
+                className="space-y-6"
               >
                 <PlanningProgress session={session} />
+                <ThoughtStream sessionId={session.id} />
               </motion.div>
             ) : session.status === 'review_needed' ? (
               /* APPROVAL GATE STAGE */
@@ -344,7 +366,7 @@ export default function App() {
                 <div className="pt-4 border-t border-gray-100 w-full flex justify-center">
                   <button
                     onClick={resetDashboard}
-                    className="bg-orange-500 text-white hover:bg-orange-600 text-xs font-bold px-6 py-3 rounded-xl transition-all flex items-center gap-2 shadow-md shadow-orange-100"
+                    className="bg-gray-100 hover:bg-gray-200 text-gray-750 text-xs font-bold px-6 py-3 rounded-xl transition-all flex items-center justify-center gap-2"
                   >
                     <CornerUpLeft className="h-4 w-4" />
                     Deconstruct Another Emergency Goal
