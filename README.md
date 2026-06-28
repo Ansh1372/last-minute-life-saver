@@ -24,6 +24,16 @@ This friction leads to:
 
 ---
 
+### ✨ Key Hackathon Features
+During the hackathon, we built 5 major enhancements to elevate the product experience:
+1. **🎙️ Voice Input:** Speak your panic directly into the system using the Web Speech API for faster intake.
+2. **🔄 Habit & Recurring Goal Tracking:** Automatically track goals in a local dashboard to identify recurring panic patterns and re-run saved habits.
+3. **🚨 Triage Mode (Damage Control):** A secondary emergency flow for deadlines you *already missed*. Gemini immediately assesses severity, writes a professional damage-control email, and generates a 3-step escalation plan.
+4. **🔔 Email Reminders (Nodemailer):** Close the loop securely. The app sends you an actual email reminder with your goal and deadline once your plan is approved.
+5. **✨ Animated Onboarding:** A polished 3-step carousel to guide first-time users before they connect their Google Workspace.
+
+---
+
 ### 🏗️ Project Architecture & Workflow
 The system utilizes a custom, multi-node agentic workflow inspired by **LangGraph** to process state transitions robustly and asynchronously:
 
@@ -81,8 +91,12 @@ Create a `.env` file in the root directory and define the required secret and en
 # Google Gemini API key used for the coordination loop
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# App URL endpoint, used internally for self-referential links
-APP_URL=http://localhost:3000
+# Groq API Key for Fallback Provider (Required for resiliency)
+GROQ_API_KEY=your_groq_api_key_here
+
+# Email Reminder Config (Nodemailer via Gmail SMTP)
+REMINDER_EMAIL_USER=your-gmail@gmail.com
+REMINDER_EMAIL_PASS=your-app-password-here
 ```
 *(Ensure `.env` matches your local workspace credentials and is never committed to Git).*
 
