@@ -242,33 +242,33 @@ export default function ApprovalGate({
         </div>
         <div className="flex items-center gap-2 w-full sm:w-auto">
           {reminderSent ? (
-            <span className="text-xs font-bold text-emerald-600 flex items-center gap-1 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-100">
+            <span className="text-xs font-bold text-emerald-600 flex items-center justify-center gap-1 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-100 w-full sm:w-auto">
               <CheckCircle2 className="h-3.5 w-3.5" /> Sent!
             </span>
           ) : (
-            <>
+            <div className="flex flex-col sm:flex-row w-full sm:w-auto gap-2">
               <input
                 type="email"
                 placeholder="your@email.com"
                 value={reminderEmail}
                 onChange={(e) => setReminderEmail(e.target.value)}
-                className="text-xs border border-gray-200 rounded-lg px-3 py-1.5 focus:outline-none focus:border-blue-300 flex-1 sm:w-48"
+                className="text-xs border border-gray-200 rounded-lg px-3 py-2 sm:py-1.5 focus:outline-none focus:border-blue-300 w-full sm:w-48"
               />
               <button
                 onClick={handleSendReminder}
                 disabled={isSendingReminder || !reminderEmail.includes('@')}
-                className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1 shadow-sm"
+                className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white text-xs font-bold px-4 py-2 sm:py-1.5 rounded-lg transition-colors flex items-center justify-center gap-1 shadow-sm w-full sm:w-auto"
               >
                 {isSendingReminder ? 'Sending...' : 'Remind Me'}
               </button>
-            </>
+            </div>
           )}
         </div>
       </div>
 
       {/* Tabs Row */}
-      <div className="px-6 border-b border-gray-100 flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex gap-4">
+      <div className="px-6 border-b border-gray-100 flex items-center justify-between gap-4 overflow-x-auto scrollbar-hide">
+        <div className="flex gap-6 whitespace-nowrap">
           <button
             onClick={() => setActiveTab('calendar')}
             className={`pb-3 text-xs font-bold border-b-2 transition-all flex items-center gap-2 ${

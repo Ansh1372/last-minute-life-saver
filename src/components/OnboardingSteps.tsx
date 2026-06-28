@@ -46,7 +46,7 @@ export default function OnboardingSteps({ onConnectGoogle }: OnboardingStepsProp
   const Icon = step.icon;
 
   return (
-    <div className="bg-white rounded-3xl border border-gray-150 shadow-sm overflow-hidden">
+    <div className="backdrop-blur-xl bg-white/85 rounded-3xl border border-white/50 shadow-[0_8px_30px_rgb(0,0,0,0.04)] overflow-hidden">
       {/* Top accent bar */}
       <div className="h-1 w-full bg-gradient-to-r from-orange-400 via-purple-400 to-blue-400" />
 

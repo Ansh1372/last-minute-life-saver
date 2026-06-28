@@ -233,7 +233,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50/60 flex flex-col font-sans selection:bg-orange-500 selection:text-white">
+    <div className="ambient-bg min-h-screen flex flex-col font-sans selection:bg-orange-500 selection:text-white">
       {/* Structural Header */}
       <Header
         tokenStatus={tokenStatus}
@@ -243,42 +243,44 @@ export default function App() {
         setShowAuditLogs={setShowAuditLogs}
       />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-6 py-8 space-y-8">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6 sm:space-y-8">
         
         {/* Banner/Intro */}
         <section id="introduction-banner" className="bg-white border border-gray-150 p-8 rounded-3xl relative overflow-hidden shadow-xs">
           {/* Subtle Ambient Background Mesh */}
           <div className="absolute inset-0 bg-radial from-gray-50/10 via-white to-white opacity-90 z-0"></div>
           
-          <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <div className="space-y-2.5 max-w-2xl">
-              <span className="text-[9px] font-bold font-mono uppercase bg-orange-105 text-orange-800 px-3 py-1 rounded-full border border-orange-200 tracking-wider">
-                ⚡ Salvaging Panicked Situations
-              </span>
-              <h2 className="font-display font-semibold text-gray-950 text-2xl tracking-tight">
-                Instantly turn crisis & panic into a clear calendar schedule.
+          {/* Title Area */}
+          <div className="relative z-10 flex flex-col md:flex-row md:items-start justify-between gap-6">
+            <div className="space-y-3 max-w-xl">
+              <h2 className="font-display font-semibold text-gray-900 text-3xl sm:text-4xl tracking-tight leading-tight">
+                Crisis Coordination. <br className="hidden sm:block" />
+                <span className="text-orange-500">Scheduled & Drafted.</span>
               </h2>
-              <p className="text-xs text-gray-500 leading-relaxed font-light font-sans">
-                Our autonomous LangGraph planning coordinator analyzes deadline goals, checks your calendar for busy times, structures task lists, and automatically drafts communication files—then hands you full control before anything is written.
+              <p className="text-sm text-gray-600 leading-relaxed font-light font-sans max-w-lg">
+                Enter your massive, overlapping panic goal. The agentic system will autonomously break it down, locate slots on your actual calendar, and prepare professional Google Docs & Gmail drafts so you hit the ground running.
               </p>
             </div>
 
-            {!tokenStatus.hasToken && (
-              <div className="bg-gray-50 border border-gray-200 p-5 rounded-2xl max-w-sm space-y-2.5 shrink-0 shadow-xs">
-                <span className="block text-[9px] font-bold font-mono uppercase text-orange-650">
-                  ⚠️ Workspace Access Disabled
-                </span>
-                <p className="text-[11px] text-gray-400 leading-relaxed font-light">
-                  Connect Google Workspace to safely export planning events, file document outlines, and structure real drafts recursively.
-                </p>
-                <button
-                  onClick={() => setAuthModalOpen(true)}
-                  className="bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-all w-full flex items-center justify-center gap-1.5 shadow-md shadow-orange-100 active:scale-[0.98]"
-                >
-                  Connect Access Account
-                </button>
-              </div>
-            )}
+            {/* Status Integration Chip */}
+            <div className="flex flex-col items-start md:items-end gap-2 shrink-0 w-full md:w-auto">
+              {!tokenStatus.hasToken && (
+                <div className="bg-gray-50 border border-gray-200 p-5 rounded-2xl max-w-sm space-y-2.5 shrink-0 shadow-xs">
+                  <span className="block text-[9px] font-bold font-mono uppercase text-orange-650">
+                    ⚠️ Workspace Access Disabled
+                  </span>
+                  <p className="text-[11px] text-gray-400 leading-relaxed font-light">
+                    Connect Google Workspace to safely export planning events, file document outlines, and structure real drafts recursively.
+                  </p>
+                  <button
+                    onClick={() => setAuthModalOpen(true)}
+                    className="bg-orange-500 hover:bg-orange-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-all w-full flex items-center justify-center gap-1.5 shadow-md shadow-orange-100 active:scale-[0.98]"
+                  >
+                    Connect Access Account
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </section>
 
@@ -324,8 +326,8 @@ export default function App() {
                     </div>
                     <div className="space-y-3">
                       {pastSessions.map((s: any) => (
-                        <div key={s.id} className="flex items-start gap-3 p-4 rounded-xl border border-gray-100 bg-gray-50/50 hover:bg-white hover:border-purple-200 transition-colors shadow-xs group">
-                           <div className="mt-0.5">
+                        <div key={s.id} className="flex items-start gap-3 p-4 rounded-xl border border-gray-100 bg-white/50 backdrop-blur-sm hover:bg-white hover:border-purple-200 hover:-translate-y-0.5 hover:shadow-md transition-all duration-300 group cursor-pointer">
+                           <div className="mt-0.5 shrink-0">
                              <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                            </div>
                            <div className="flex-1 min-w-0">
@@ -414,12 +416,12 @@ export default function App() {
                 </div>
 
                 {/* Shortcuts Grid */}
-                <div className="w-full grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3">
+                <div className="w-full grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-3">
                   <a
                     href="https://calendar.google.com"
                     target="_blank"
                     rel="referrer noopener"
-                    className="p-4 border border-gray-200 rounded-2xl hover:border-orange-500 hover:bg-orange-50/5 transition-colors bg-gray-50/50 flex flex-col items-center gap-1.5"
+                    className="p-4 border border-gray-200 rounded-2xl hover:border-orange-500 hover:bg-orange-50/5 transition-all duration-200 hover:-translate-y-1 hover:shadow-md bg-white flex flex-col items-center gap-1.5"
                   >
                     <Calendar className="h-5 w-5 text-gray-800" />
                     <span className="text-xs font-bold text-gray-950">Google Calendar</span>
@@ -432,10 +434,10 @@ export default function App() {
                       href={art.workspaceUrl || "#"}
                       target="_blank"
                       rel="referrer noopener"
-                      className="p-4 border border-gray-200 rounded-2xl hover:border-orange-500 hover:bg-orange-50/5 transition-colors bg-gray-50/50 flex flex-col items-center gap-1.5"
+                      className="p-4 border border-gray-200 rounded-2xl hover:border-orange-500 hover:bg-orange-50/5 transition-all duration-200 hover:-translate-y-1 hover:shadow-md bg-white flex flex-col items-center gap-1.5"
                     >
                       <Clock className="h-5 w-5 text-gray-800" />
-                      <span className="text-xs font-bold text-gray-950 truncate max-w-[130px]">
+                      <span className="text-xs font-bold text-gray-950 truncate w-full text-center">
                         {art.type === 'email' ? 'Gmail Folder' : 'Google Doc'}
                       </span>
                       <span className="text-[10px] text-gray-450 truncate">
