@@ -5,12 +5,13 @@ import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { Groq } from "groq-sdk";
 import { StateGraph, Annotation, MemorySaver } from "@langchain/langgraph";
+import nodemailer from "nodemailer";
 import { Subtask, StarterArtifact, AuditLogEntry, PanickedGoal, CalendarEvent } from "./src/types";
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = 3001;
 
 app.use(express.json());
 
@@ -247,7 +248,7 @@ async function analyzeGoalNode(state: typeof AgentState.State) {
       For each subtask, provide:
       1. A short, catchy title.
       2. A brief, practical description of exactly what needs to be done.
-      3. A realistic duration in minutes (between 15 and 180).
+      3. A realistic duration in minutes (between 15 and 180). IMPORTANT: If the user explicitly requests a specific duration (e.g., "3 hours"), you MUST set estimatedMinutes to match their request exactly.
 
       Return the result as a strict JSON array of objects with the exact following keys:
       [
@@ -627,6 +628,7 @@ async function draftArtifactsNode(state: typeof AgentState.State) {
       Your primary directive is to instantly break a user's analysis paralysis by generating deeply contextual, high-caliber, and completely actionable stakeholder communication drafts.
 
       The user goal is: "${state.goal}".
+      The target deadline is: "${state.targetDate}".
 
       CRITICAL GENERATION CONSTRAINTS:
       1. TONALITY: Maintain an incredibly calm, reassuring, highly structured, and execution-first professional tone.
@@ -671,6 +673,7 @@ async function draftArtifactsNode(state: typeof AgentState.State) {
       Your primary directive is to instantly break a user's analysis paralysis by generating deeply contextual, high-caliber, and completely actionable workspace playbooks.
 
       The user goal is: "${state.goal}".
+      The target deadline is: "${state.targetDate}".
 
       CRITICAL GENERATION CONSTRAINTS:
       1. TONALITY: Maintain an incredibly calm, reassuring, highly structured, and execution-first professional tone.
@@ -1192,6 +1195,149 @@ app.post("/api/undo", async (req, res) => {
   }, 100);
 
   res.json({ sessionId: id });
+});
+
+
+// =============================================================================
+// TRIAGE MODE: Damage Control for Already-Missed Deadlines (Powered by Gemini)
+// =============================================================================
+app.post("/api/triage", async (req, res) => {
+  const { missedDeadline, context, stakeholders } = req.body;
+
+  if (!missedDeadline || !context) {
+    return res.status(400).json({ error: "missedDeadline and context are required." });
+  }
+
+  writeAuditLog(null, "triageMode", "Triage Initiated", `Missed deadline: "${missedDeadline}"`, "warning");
+
+  try {
+    const ai = getGeminiClient();
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+    const prompt = `
+You are an expert crisis manager and executive communication coach. Today is ${today}.
+
+A user has already MISSED a deadline. They need immediate, calm, and professional damage control.
+
+MISSED DEADLINE: "${missedDeadline}"
+CONTEXT / REASON: "${context}"
+STAKEHOLDERS AFFECTED: "${stakeholders || 'Team / Manager'}"
+
+Your job is to generate a structured triage response. Return a JSON object with EXACTLY this structure:
+{
+  "severityLevel": "low" | "medium" | "high" | "critical",
+  "severityReason": "One sentence explaining why you chose this severity level",
+  "damageControlEmail": {
+    "subject": "Professional email subject line",
+    "to": "Who this should be sent to",
+    "body": "Full professional email body. Calm, accountable, solution-focused. 2-3 short paragraphs. Acknowledge the miss, brief honest reason, and concrete new delivery commitment with a specific date/time."
+  },
+  "escalationPlan": [
+    {
+      "step": 1,
+      "action": "Short action title",
+      "detail": "Specific, concrete thing to do right now",
+      "timeframe": "e.g. Next 30 minutes"
+    },
+    {
+      "step": 2,
+      "action": "Short action title",
+      "detail": "Specific, concrete thing to do",
+      "timeframe": "e.g. Within 2 hours"
+    },
+    {
+      "step": 3,
+      "action": "Short action title",
+      "detail": "Specific, concrete thing to do",
+      "timeframe": "e.g. By end of day"
+    }
+  ],
+  "recoveryMindset": "One powerful, reassuring sentence to help the user stay calm and focused"
+}
+
+CRITICAL: Return ONLY valid JSON. No markdown code blocks. No explanation. No preamble. Just the JSON object.
+`;
+
+    const result = await generateWithGroqFallback(
+      async () => {
+        const response = await callWithRetry(() =>
+          ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            config: { temperature: 0.5, maxOutputTokens: 1500 }
+          })
+        );
+        const rawText = response.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        return { text: rawText };
+      },
+      prompt,
+      { isJson: true }
+    );
+
+    let parsed: any;
+    try {
+      let clean = result.text.trim()
+        .replace(/^```json\s*/i, '')
+        .replace(/^```\s*/i, '')
+        .replace(/```$/i, '')
+        .trim();
+      parsed = JSON.parse(clean);
+    } catch (parseErr) {
+      // Try extracting JSON object
+      const firstBrace = result.text.indexOf('{');
+      const lastBrace = result.text.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1) {
+        parsed = JSON.parse(result.text.substring(firstBrace, lastBrace + 1));
+      } else {
+        throw new Error("Triage response was not valid JSON.");
+      }
+    }
+
+    writeAuditLog(null, "triageMode", "Triage Complete", `Generated damage control plan. Severity: ${parsed.severityLevel}`, "success");
+    res.json({ success: true, triage: parsed });
+
+  } catch (err: any) {
+    writeAuditLog(null, "triageMode", "Triage Failed", err.message, "error");
+    res.status(500).json({ error: `Triage generation failed: ${err.message}` });
+  }
+});
+
+// =============================================================================
+// EMAIL REMINDERS (Nodemailer)
+// =============================================================================
+app.post("/api/remind", async (req, res) => {
+  const { to, subject, text } = req.body;
+
+  if (!to || !subject || !text) {
+    return res.status(400).json({ error: "Missing to, subject, or text in request body." });
+  }
+
+  if (!process.env.REMINDER_EMAIL_USER || !process.env.REMINDER_EMAIL_PASS) {
+    return res.status(500).json({ error: "Email configuration missing on the server. Set REMINDER_EMAIL_USER and REMINDER_EMAIL_PASS." });
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: process.env.REMINDER_EMAIL_USER,
+        pass: process.env.REMINDER_EMAIL_PASS,
+      },
+    });
+
+    await transporter.sendMail({
+      from: process.env.REMINDER_EMAIL_USER,
+      to,
+      subject,
+      text,
+    });
+
+    writeAuditLog(null, "remind", "Email Sent", \`Reminder sent to \${to}\`, "success");
+    res.json({ success: true, message: "Reminder email sent successfully." });
+  } catch (err: any) {
+    writeAuditLog(null, "remind", "Email Failed", err.message, "error");
+    res.status(500).json({ error: \`Failed to send email: \${err.message}\` });
+  }
 });
 
 // Human-in-the-Loop Modification gate
