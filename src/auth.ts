@@ -41,7 +41,6 @@ export const getOAuthUrl = (clientId: string, redirectUri: string, scopes: strin
   const options = {
     redirect_uri: redirectUri,
     client_id: clientId,
-    access_type: 'offline', // request authorization code
     response_type: 'token',
     prompt: 'consent',
     scope: scopes.join(' '),

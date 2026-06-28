@@ -9,7 +9,8 @@ interface OAuthModalProps {
 }
 
 export default function OAuthModal({ isOpen, onClose, onSuccess }: OAuthModalProps) {
-  const [clientId, setClientId] = useState('');
+  const envClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+  const [clientId, setClientId] = useState(envClientId);
   const [manualToken, setManualToken] = useState('');
   const [showToken, setShowToken] = useState(false);
   const [developerName, setDeveloperName] = useState('Workspace Tester');
@@ -23,11 +24,13 @@ export default function OAuthModal({ isOpen, onClose, onSuccess }: OAuthModalPro
     'https://www.googleapis.com/auth/documents'
   ];
 
-  // Pre-fill local storage client id
+  // Pre-fill local storage client id if env is empty
   React.useEffect(() => {
-    const saved = localStorage.getItem('life_saver_client_id');
-    if (saved) setClientId(saved);
-  }, []);
+    if (!envClientId) {
+      const saved = localStorage.getItem('life_saver_client_id');
+      if (saved) setClientId(saved);
+    }
+  }, [envClientId]);
 
   if (!isOpen) return null;
 
@@ -76,21 +79,30 @@ export default function OAuthModal({ isOpen, onClose, onSuccess }: OAuthModalPro
               Standard Google OAuth
             </h4>
             <div className="p-4 bg-slate-50 rounded-xl space-y-3 border border-slate-100">
-              <p className="text-xs text-slate-600 leading-relaxed">
-                Provide your custom **Google Client ID** (from Google Cloud Console) to log in directly via the official secure Google Consent page.
-              </p>
-              <div>
-                <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-400 font-semibold mb-1">
-                  Google Client ID
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 575869-abc.apps.googleusercontent.com"
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                  className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-800 font-mono bg-white"
-                />
-              </div>
+              {!envClientId && (
+                <>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    Provide your custom **Google Client ID** (from Google Cloud Console) to log in directly via the official secure Google Consent page.
+                  </p>
+                  <div>
+                    <label className="block text-[10px] uppercase tracking-wider font-mono text-slate-400 font-semibold mb-1">
+                      Google Client ID
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. 575869-abc.apps.googleusercontent.com"
+                      value={clientId}
+                      onChange={(e) => setClientId(e.target.value)}
+                      className="w-full text-xs px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:border-slate-800 font-mono bg-white"
+                    />
+                  </div>
+                </>
+              )}
+              {envClientId && (
+                <p className="text-xs text-slate-600 leading-relaxed text-center py-2">
+                  Securely connect your Google Calendar and Gmail to allow the AI to schedule slots and draft documents automatically.
+                </p>
+              )}
               <button
                 type="button"
                 onClick={handleLaunchOAuth}
