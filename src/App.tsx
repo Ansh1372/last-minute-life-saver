@@ -9,6 +9,8 @@ import ApprovalGate from './components/ApprovalGate';
 import AuditLogView from './components/AuditLogView';
 import OAuthModal from './components/OAuthModal';
 import ThoughtStream from './components/ThoughtStream';
+import TriageMode from './components/TriageMode';
+import OnboardingSteps from './components/OnboardingSteps';
 import { CheckCircle2, Clock, Calendar, ExternalLink, AlertTriangle, Play, CornerUpLeft, BookOpen, RefreshCw, Sparkles, HelpCircle } from 'lucide-react';
 
 export default function App() {
@@ -23,6 +25,20 @@ export default function App() {
   const [globalLogs, setGlobalLogs] = useState<AuditLogEntry[]>([]);
   const [showAuditLogs, setShowAuditLogs] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [pastSessions, setPastSessions] = useState<{id: string, goal: string, date: string, timestamp: number}[]>([]);
+  const [triageModeOpen, setTriageModeOpen] = useState(false);
+
+  // ---------------------------------------------------------------------------
+  // LocalStorage Habit & History
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const saved = localStorage.getItem('lmls_past_sessions');
+    if (saved) {
+      try {
+        setPastSessions(JSON.parse(saved));
+      } catch (e) {}
+    }
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Google OAuth Hash Callback Parser
@@ -148,6 +164,12 @@ export default function App() {
           auditLogs: [],
         };
         setSession(initialSession);
+
+        // Save to habit tracker history
+        const newPastSession = { id: data.sessionId, goal, date, timestamp: Date.now() };
+        const updatedPastSessions = [newPastSession, ...pastSessions].slice(0, 5); // Keep last 5
+        setPastSessions(updatedPastSessions);
+        localStorage.setItem('lmls_past_sessions', JSON.stringify(updatedPastSessions));
       } else {
         throw new Error("Failed to queue task planning session on server.");
       }
@@ -274,8 +296,68 @@ export default function App() {
                 transition={{ duration: 0.25 }}
                 className="space-y-6"
               >
-                <GoalIntake onSubmit={handleStartPlanning} isLoading={isLoading} />
+                <GoalIntake onSubmit={handleStartPlanning} isLoading={isLoading} onOpenTriage={() => setTriageModeOpen(true)} />
+
+                {/* Onboarding Steps — shown to new users without Google connected */}
+                {!tokenStatus.hasToken && pastSessions.length === 0 && (
+                  <OnboardingSteps onConnectGoogle={() => setAuthModalOpen(true)} />
+                )}
                 
+                {/* Past Sessions Habit Tracker */}
+                {pastSessions.length > 0 && (
+                  <div className="bg-white rounded-2xl border border-gray-150 p-6 shadow-sm mt-6 hover:shadow-md transition-all duration-300">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-purple-500 rounded-xl text-white shadow-md shadow-purple-100">
+                          <RefreshCw className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <span className="block text-[10px] font-bold text-gray-450 uppercase tracking-widest leading-none mb-1">
+                            Habit & History
+                          </span>
+                          <h2 className="font-display font-bold text-gray-800 text-lg leading-tight">
+                            Recent Crises Salvaged
+                          </h2>
+                        </div>
+                      </div>
+                      <span className="text-[10px] font-mono text-gray-400 font-bold">{pastSessions.length} / 5 saved</span>
+                    </div>
+                    <div className="space-y-3">
+                      {pastSessions.map((s: any) => (
+                        <div key={s.id} className="flex items-start gap-3 p-4 rounded-xl border border-gray-100 bg-gray-50/50 hover:bg-white hover:border-purple-200 transition-colors shadow-xs group">
+                           <div className="mt-0.5">
+                             <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                           </div>
+                           <div className="flex-1 min-w-0">
+                             <p className="text-sm font-medium text-gray-800 line-clamp-2 leading-snug">{s.goal}</p>
+                             <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                               <p className="text-[10px] font-semibold text-gray-500 flex items-center gap-1 uppercase tracking-wider">
+                                 <Calendar className="h-3 w-3" /> Due: {s.date}
+                               </p>
+                               {s.tracked && s.recurrence && s.recurrence !== 'none' && (
+                                 <span className="inline-flex items-center gap-1 text-[10px] font-bold text-purple-700 bg-purple-50 border border-purple-100 px-2 py-0.5 rounded-full">
+                                   <Sparkles className="h-2.5 w-2.5" /> Recurring {s.recurrence}
+                                 </span>
+                               )}
+                               {s.tracked && (
+                                 <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-full">
+                                   📌 Tracked
+                                 </span>
+                               )}
+                             </div>
+                           </div>
+                           <button
+                             onClick={() => handleStartPlanning(s.goal, s.date)}
+                             disabled={isLoading}
+                             className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 hover:bg-orange-100 px-2.5 py-1.5 rounded-lg flex items-center gap-1 shrink-0"
+                           >
+                             <Play className="h-3 w-3" /> Re-run
+                           </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
               </motion.div>
             ) : ['analyzing', 'calendar_check', 'drafting'].includes(session.status) ? (
@@ -385,6 +467,9 @@ export default function App() {
 
         </div>
       </main>
+
+      {/* Triage Mode Modal */}
+      {triageModeOpen && <TriageMode onClose={() => setTriageModeOpen(false)} />}
 
       {/* Global OAuth Configuration Portal */}
       <OAuthModal
