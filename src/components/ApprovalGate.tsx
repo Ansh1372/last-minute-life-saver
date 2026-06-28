@@ -144,11 +144,13 @@ export default function ApprovalGate({
   };
 
   return (
-    <div className="bg-white rounded-3xl border-2 border-orange-200 shadow-md overflow-hidden space-y-6 relative">
+    <div className="relative">
       {/* Top Banner Accent Indicator */}
-      <div className="absolute -top-3 left-6 px-3.5 py-1 bg-orange-500 text-white text-[10px] font-bold rounded-full uppercase tracking-widest shadow-md shadow-orange-200">
+      <div className="absolute -top-3 left-6 px-3.5 py-1 bg-orange-500 text-white text-[10px] font-bold rounded-full uppercase tracking-widest shadow-md shadow-orange-200 z-10">
         Approval Required
       </div>
+
+      <div className="bg-white rounded-3xl border-2 border-orange-200 shadow-md overflow-hidden space-y-6">
 
       {/* Banner / User Instruction */}
       <div className="p-6 pt-8 bg-gray-50/50 border-b border-gray-150 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -612,6 +614,7 @@ export default function ApprovalGate({
         </div>
       )}
 
+      </div>
     </div>
   );
 }
