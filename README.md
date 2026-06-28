@@ -24,7 +24,7 @@ This friction leads to:
 
 ---
 
-### ✨ Key Hackathon Features
+### ✨ Key Hackathon Features & Agentic Depth
 During the hackathon, we built 5 major enhancements to elevate the product experience:
 1. **🎙️ Voice Input:** Speak your panic directly into the system using the Web Speech API for faster intake.
 2. **🔄 Habit & Recurring Goal Tracking:** Automatically track goals in a local dashboard to identify recurring panic patterns and re-run saved habits.
@@ -34,10 +34,20 @@ During the hackathon, we built 5 major enhancements to elevate the product exper
 
 ---
 
+### 🏆 Usage of Google Technologies
+This project relies heavily on the Google Developer ecosystem as its core technological foundation:
+* **Google AI Studio (Gemini 2.5 Flash):** Acts as the core reasoning engine. It parses natural language, decides task durations, writes damage control emails (in Triage Mode), and maps out exact daily schedules.
+* **Google Cloud Console (OAuth 2.0):** Implements a secure, production-ready Google Authentication flow to identify users without requiring manual API key inputs.
+* **Google Workspace Ecosystem:** The entire goal of the agent is to prepare and orchestrate data for Google Calendar, Gmail, and Google Docs.
+
+*(Note: Groq is included strictly as a failover/fallback provider to demonstrate production-grade resiliency and error handling in case of rate limits).*
+
+---
+
 ### 🏗️ Project Architecture & Workflow
 The system utilizes a custom, multi-node agentic workflow inspired by **LangGraph** to process state transitions robustly and asynchronously:
 
-```
+```text
 [ Panic Goal Intake ] 
          │
          ▼
@@ -56,22 +66,13 @@ The system utilizes a custom, multi-node agentic workflow inspired by **LangGrap
 [ Human Clearance Gate ]   ───► Inline edits, inclusion switches, & final commit approval
 ```
 
-| Cycle Node | Technical Responsibility | Primary Actions |
-| :--- | :--- | :--- |
-| **Goal Intake & Parsing Node** | Target analysis & extraction | Evaluates user crisis input against absolute deadlines to isolate key subgoals. |
-| **Calendar Audit Node** | Constraints verification | Inspects Google Calendar to find free space and prevent conflicts. |
-| **Orchestrated Scheduling Node** | Time-aware task allocation | Schedules specific preparation and execution events directly into appropriate slots. |
-| **Workspace Content Generation Node** | Multi-channel communication | Generates markdown outlines for Google Docs and pre-populated client-safe email body templates. |
-
 ---
 
-### 🛠️ Tech Stack & Ecosystem Tools
-The application is built using a modern, reliable full-stack developer architecture:
-
-* **Core Agentic Framework:** Lightweight TypeScript/Node.js multi-node coordinator inspired by LangGraph principles for state-driven task execution.
-* **LLM Engine:** Google Gemini (utilizing `gemini-2.5-flash` via the `@google/genai` TypeScript SDK) configured with custom structured instructions.
-* **Integrations & Tools:** Google Workspace sandbox APIs (Google Calendar for calendar sync, Gmail for email draft placement, Google Docs for document outlines).
-* **Frontend/Environment:** React (Vite-powered SPA, optimized with high-contrast minimalist orange/gray utility layouts, responsive micro-animations via `motion`, and standard UI controls).
+### 🛠️ Tech Stack & Production-Ready Standards
+The application is built using a modern, reliable full-stack developer architecture with strong error handling:
+* **Frontend:** React + Vite + Tailwind CSS. Wrapped in standard `ErrorBoundary` components to catch rendering crashes seamlessly.
+* **Backend:** Fastify Node.js server with comprehensive `try/catch` exception blocks and detailed HTTP status code responses (400, 404, 500).
+* **Logging:** Dedicated `writeAuditLog` utility that captures real-time agentic reasoning, API failures, and successful email dispatches for deep transparency.
 
 ---
 
@@ -91,6 +92,9 @@ Create a `.env` file in the root directory and define the required secret and en
 # Google Gemini API key used for the coordination loop
 GEMINI_API_KEY=your_gemini_api_key_here
 
+# Centralized Google OAuth Client ID for Production Auth Flow
+VITE_GOOGLE_CLIENT_ID=your_google_cloud_oauth_client_id
+
 # Groq API Key for Fallback Provider (Required for resiliency)
 GROQ_API_KEY=your_groq_api_key_here
 
@@ -105,12 +109,4 @@ Start the local development server:
 ```bash
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) in your browser to interact with the minimalist dashboard.
-
----
-
-### 🎨 Visual Theme & Interactive Experience
-To inspire calm focus amidst tight timelines, the user interface features:
-* **The Crimson-Orange Minimalist Theme:** Designed with soft-gray cards, sharp status lights, distinct borders, and highly readable high-contrast orange accent buttons.
-* **Human-in-the-Loop Clearance Gate:** Gives users full inline configuration capabilities to edit titles, modify start times, rewrite drafts, and select which items sync directly to remote calendars and cloud drives.
-* **Active Processing Log Rail:** Renders a scrolling live-terminal log illustrating real-time decisions, node evaluations, and state completions of the planning agent.
+Open [http://localhost:3001](http://localhost:3001) in your browser to interact with the minimalist dashboard.
