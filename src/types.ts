@@ -6,6 +6,7 @@ export interface Subtask {
   scheduledStart?: string; // ISO date
   scheduledEnd?: string; // ISO date
   status: 'pending' | 'approved' | 'rejected' | 'scheduled';
+  action?: 'insert' | 'delete';
 }
 
 export interface StarterArtifact {
@@ -27,6 +28,7 @@ export interface PanickedGoal {
   subtasks: Subtask[];
   artifacts: StarterArtifact[];
   auditLogs: AuditLogEntry[];
+  streamSteps?: string[];
 }
 
 export interface AuditLogEntry {
