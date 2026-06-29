@@ -61,10 +61,25 @@ A modern, animated, step-by-step onboarding carousel built with **Framer Motion*
 ---
 
 ### 🏆 Google Developer Ecosystem Integration
-We utilized the core strengths of Google technologies to build a production-grade product:
-* **Google AI Studio (Gemini 2.5 Flash):** Acts as our primary reasoning engine. It interprets natural language, predicts task durations, formats schema-perfect JSON structures, and authors professional damage-control templates.
-* **Google OAuth 2.0 (Implicit Grant Flow):** Fully integrated with secure Google Identity services. We polished the flow by removing strict offline-access conflicts to enable a seamless, browser-safe, single-click login that connects calendar and workspace resources safely.
-* **Google Workspace APIs:** The app generates actual events in **Google Calendar**, drafts messages in **Gmail**, and outlines workspace notes in **Google Docs** on behalf of the user.
+This application leverages the full power of the Google developer ecosystem to deliver a seamless, autonomous workspace planning coordinator:
+* **Google AI Studio (Gemini 2.5 Flash):** Serves as the central analytical brain. Gemini processes unstructured crisis descriptions, models realistic preparation durations, handles robust schema-perfect JSON structuralization, and drafts professional high-empathy communication.
+* **Google OAuth 2.0 (Implicit Grant Flow):** Orchestrates safe, secure client-side user identification and permission grant flows without exposing sensitive credentials.
+* **Google Workspace APIs:** Dynamically reads and writes user data to restore structure to their day:
+  * **Google Calendar API:** Checks availability windows and automates booking slots to guarantee dedicated work blocks.
+  * **Gmail API:** Drafts stakeholder-ready update communications for direct confirmation and immediate resolution.
+  * **Google Docs API:** Dynamically structures high-fidelity document outlines, notes, and action plans directly in the user's workspace.
+
+---
+
+### 📦 Third-Party & Open-Source Credits
+We would like to express our gratitude to the incredible open-source community and standard libraries that make this interface highly interactive, robust, and beautiful:
+* **React 19 & TypeScript:** Provides the structural, declarative reactive framework and strong typing safety that binds the entire application state together.
+* **Vite:** Operates as our ultra-fast build tool and development server, ensuring high-fidelity, lightning-fast rendering.
+* **Tailwind CSS:** Powers the entire modern design language, utilizing fluid utility classes, premium color palettes, and responsive grid layouts.
+* **Framer Motion:** Empowers smooth micro-animations, slide-in guides, and responsive step transitions for an elegant user onboarding experience.
+* **Lucide React:** Supplies beautiful, clean, and highly descriptive modern stroke icons that enrich our button actions, tabs, and statuses.
+* **Nodemailer:** Handles our robust, server-side secure SMTP email dispatch routes to deliver direct crisis alarms and timeline checklists right to your inbox.
+* **Groq SDK:** Integrates as a production-ready failover and fallback AI provider to ensure maximum application uptime and resilient error recovery.
 
 ---
 
