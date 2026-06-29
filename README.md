@@ -1,112 +1,159 @@
 # Last-Minute Life Saver ⏱️🚀
 ## Autonomous Agentic Planning Coordinator
 
-Last-Minute Life Saver is an intelligent, autonomous agentic platform engineered to transform high-pressure crisis situations and tight deadlines into clear, structured, and actionable schedules. By parsing unstructured panic intake goals, analyzing current calendar commitments, and programmatically drafting workspace documents, it automates the tedious preparation and scheduling work so you can focus entirely on execution.
+[![Live Site](https://img.shields.io/badge/Live-App-orange?style=for-the-badge)](https://last-minute-life-saver-737688365498.asia-southeast1.run.app)
+[![Google Cloud Run](https://img.shields.io/badge/Google--Cloud--Run-blue?logo=google-cloud&style=for-the-badge)](https://cloud.google.com)
+[![Gemini API](https://img.shields.io/badge/Gemini--2.5--Flash-indigo?logo=google-gemini&style=for-the-badge)](https://ai.google.dev)
+
+**Last-Minute Life Saver** is a high-fidelity, intelligent autonomous agentic platform engineered to transform high-pressure crisis situations, sudden panic goals, and near-impossible deadlines into clean, structured, and manageable daily execution schedules. 
+
+By parsing unstructured natural language or live spoken voice inputs, securely auditing your real Google Calendar events, and dynamically structuring high-fidelity preparation agendas and draft Gmail updates, the agent handles the heavy lifting of scheduling and organization. This breaks the friction of analysis paralysis so you can immediately begin executing when every second counts.
+
+🔗 **Live Deployment:** [https://last-minute-life-saver-737688365498.asia-southeast1.run.app](https://last-minute-life-saver-737688365498.asia-southeast1.run.app)
 
 ---
 
-### 📌 Problem Statement
-In high-pressure environments, professionals and students frequently encounter "panic scenarios"—sudden, massive crises or tight-deadline emergencies. Manually auditing available calendar spaces, breaking down target boundaries into micro-tasks, and composing initial outreach or supporting documentation consumes precious minutes when action should already be underway.
+### 📌 The Problem
+In high-pressure work, academic, or personal environments, we all face "panic scenarios"—a major presentation due tomorrow, an integration milestone that has slipped, or a project proposal due in 48 hours with nothing built. 
 
-This friction leads to:
-* **Analysis Paralysis:** Inability to start because the full scale of the plan hasn't been organized.
-* **Scheduling Conflicts:** Double-booking or miscalculating how long critical preparation steps take.
-* **Communication Lag:** Crucial stakeholders are left in the dark because draft updates or warning emails take too long to write while working under distress.
+Under immense distress, our cognitive capacity drops. Initiating the recovery process requires:
+1. **Auditing your current calendar** to find realistic blocks of time.
+2. **Deconstructing a monolithic task** into discrete, realistic milestones with exact duration estimates.
+3. **Drafting workspace files** (agendas, notes, presentation slide outlines) from scratch.
+4. **Drafting update emails** to stakeholders to set realistic expectations.
 
----
-
-### 💡 The Solution
-**Last-Minute Life Saver** acts as an autonomous agentic salvager. It processes an unstructured, panicked overview of a crisis, validates parameters, and runs an automated coordination cycle that:
-1. **Structures an Action Plan:** Breaks the massive crisis down into manageable, chronological subtasks.
-2. **Audits Live Calendars:** Analyzes current occupancy to locate dedicated, realistic execution slots.
-3. **Drafts Critical Elements:** Prepares professional email updates within Gmail drafts and structures workspace agendas, checklists, and outline notes in Google Docs automatically.
-4. **Enforces Human Clearance:** Requires human verification and clearance before executing any actions or syncing state back to real workspace endpoints.
+Performing these coordination tasks manually takes valuable minutes when action should already have been taken. This results in **analysis paralysis**, **overlooked booking conflicts**, and **delayed stakeholder communication**.
 
 ---
 
-### ✨ Key Hackathon Features & Agentic Depth
-During the hackathon, we built 5 major enhancements to elevate the product experience:
-1. **🎙️ Voice Input:** Speak your panic directly into the system using the Web Speech API for faster intake.
-2. **🔄 Habit & Recurring Goal Tracking:** Automatically track goals in a local dashboard to identify recurring panic patterns and re-run saved habits.
-3. **🚨 Triage Mode (Damage Control):** A secondary emergency flow for deadlines you *already missed*. Gemini immediately assesses severity, writes a professional damage-control email, and generates a 3-step escalation plan.
-4. **🔔 Email Reminders (Nodemailer):** Close the loop securely. The app sends you an actual email reminder with your goal and deadline once your plan is approved.
-5. **✨ Animated Onboarding:** A polished 3-step carousel to guide first-time users before they connect their Google Workspace.
+### 💡 The Agentic Solution
+**Last-Minute Life Saver** acts as an autonomous planning coordinator. When you input your panicked crisis, it immediately boots up an advanced orchestration loop to restore order:
+
+1. **Intelligent Breakdown:** Gemini decomposes your massive crisis into logical, sequential subgoals with precise duration estimates.
+2. **Context-Aware Calendar Audits:** The agent scans your Google Calendar (via secure OAuth) to detect free windows, skipping busy slots, and calendars preparation sessions realistically around your actual meetings.
+3. **Drafting Deliverables:** It instantly structures high-fidelity document templates, outlining steps, slide outlines, or scripts in Google Docs, and drafts professional status emails inside Gmail.
+4. **Human-in-the-Loop Clearance Gate:** No code executes silently. The app presents an interactive clearance dashboard where you can customize slots, edit tasks, tweak draft emails, and click a single button to push everything to your Google account.
+5. **Real-time Reminders:** The server dispatches an actual email checklist right to your inbox when approved, making sure you stay accountable.
 
 ---
 
-### 🏆 Usage of Google Technologies
-This project relies heavily on the Google Developer ecosystem as its core technological foundation:
-* **Google AI Studio (Gemini 2.5 Flash):** Acts as the core reasoning engine. It parses natural language, decides task durations, writes damage control emails (in Triage Mode), and maps out exact daily schedules.
-* **Google Cloud Console (OAuth 2.0):** Implements a secure, production-ready Google Authentication flow to identify users without requiring manual API key inputs.
-* **Google Workspace Ecosystem:** The entire goal of the agent is to prepare and orchestrate data for Google Calendar, Gmail, and Google Docs.
+### ✨ Hackathon Highlights & Core Features
 
-*(Note: Groq is included strictly as a failover/fallback provider to demonstrate production-grade resiliency and error handling in case of rate limits).*
+#### 🎙️ 1. Real-time Voice Intake
+Never spend time typing when you're in a hurry. Powered by the **Web Speech API**, you can record your voice directly inside the intake dashboard. The engine streams your spoken panic, converts it to clean text, and passes it directly to the Gemini analysis loop.
+
+#### 🚨 2. Crisis Triage Mode (Emergency Damage Control)
+What if you *already* missed the deadline? Turn on **Triage Mode**. Gemini performs an emergency diagnostic:
+* Evaluates impact severity (Low, Medium, High, Critical).
+* Generates a 3-Step Immediate Recovery Plan.
+* Establishes a professional, high-empathy "Damage Control" email draft that you can copy with one click to manage expectations with managers or clients.
+* Re-centers your psychology with an AI-curated "Recovery Mindset" statement.
+
+#### 🔄 3. Habit & Recurring Goal Tracker
+Many tight deadlines arise from recurring patterns. You can toggle habit tracking on any goal. Approved goals are logged into a local history tracking dashboard with interactive recurrence schedules (Daily, Weekly, Monthly) to build long-term planning resilience.
+
+#### 🔔 4. Automated Email Reminders
+Integrated with secure server-side **Nodemailer** proxy routes, approving a recovery plan sends an elegant, instant HTML reminder containing your deadline and structured schedule checklist directly to your designated email address.
+
+#### 🎨 5. Interactive Onboarding Experience
+A modern, animated, step-by-step onboarding carousel built with **Framer Motion** and **Lucide Icons** guides first-time users. It explains the mechanics of the scheduling engine and showcases exactly what access is requested before initiating Google Authentication.
+
+---
+
+### 🏆 Google Developer Ecosystem Integration
+We utilized the core strengths of Google technologies to build a production-grade product:
+* **Google AI Studio (Gemini 2.5 Flash):** Acts as our primary reasoning engine. It interprets natural language, predicts task durations, formats schema-perfect JSON structures, and authors professional damage-control templates.
+* **Google OAuth 2.0 (Implicit Grant Flow):** Fully integrated with secure Google Identity services. We polished the flow by removing strict offline-access conflicts to enable a seamless, browser-safe, single-click login that connects calendar and workspace resources safely.
+* **Google Workspace APIs:** The app generates actual events in **Google Calendar**, drafts messages in **Gmail**, and outlines workspace notes in **Google Docs** on behalf of the user.
 
 ---
 
 ### 🏗️ Project Architecture & Workflow
-The system utilizes a custom, multi-node agentic workflow inspired by **LangGraph** to process state transitions robustly and asynchronously:
 
 ```text
-[ Panic Goal Intake ] 
-         │
-         ▼
- 1. Goal Intake & Parsing  ───► Extracts deadlines, key constraints, and desired outcomes
-         │
-         ▼
- 2. Live Calendar Audit    ───► Scans existing calendar events to identify free blocks
-         │
-         ▼
- 3. Orchestrated Schedule  ───► Claims optimal slots for focused action with estimated durations
-         │
-         ▼
- 4. Workspace Draft Gen     ───► Composes professional Gmail drafts & structures rich Google Docs
-         │
-         ▼
-[ Human Clearance Gate ]   ───► Inline edits, inclusion switches, & final commit approval
+       ┌────────────────────────────────────────────────────────┐
+       │             User Panic Intake (Voice or Text)          │
+       └───────────────────────────┬────────────────────────────┘
+                                   │
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │              Google OAuth 2.0 Identity Token           │
+       └───────────────────────────┬────────────────────────────┘
+                                   │
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │   Agentic Loop (Gemini 2.5 Flash + Fallback Resiliency)│
+       ├────────────────────────────────────────────────────────┤
+       │ 1. Structuring: Break goals into structured subtasks.  │
+       │ 2. Audit: Scan Google Calendar events.                 │
+       │ 3. Allocate: Time-block tasks within actual free slots.│
+       │ 4. Draft: Create Google Doc outline & Gmail draft text.│
+       └───────────────────────────┬────────────────────────────┘
+                                   │
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │           Human-in-the-Loop Approval Gate              │
+       ├────────────────────────────────────────────────────────┤
+       │  - Tweak scheduled calendar times                      │
+       │  - Edit, add, or delete subtasks                       │
+       │  - Send customized email reminder via Nodemailer      │
+       └───────────────────────────┬────────────────────────────┘
+                                   │ (Approve & Deploy)
+                                   ▼
+       ┌────────────────────────────────────────────────────────┐
+       │                Workspace Resource Sync                 │
+       ├────────────────────────────────────────────────────────┤
+       │  ✔ Google Calendar Events Scheduled                    │
+       │  ✔ Google Docs Outlines Created                        │
+       │  ✔ Gmail Status Drafts Written                         │
+       └────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-### 🛠️ Tech Stack & Production-Ready Standards
-The application is built using a modern, reliable full-stack developer architecture with strong error handling:
-* **Frontend:** React + Vite + Tailwind CSS. Wrapped in standard `ErrorBoundary` components to catch rendering crashes seamlessly.
-* **Backend:** Fastify Node.js server with comprehensive `try/catch` exception blocks and detailed HTTP status code responses (400, 404, 500).
-* **Logging:** Dedicated `writeAuditLog` utility that captures real-time agentic reasoning, API failures, and successful email dispatches for deep transparency.
+### 🛠️ Tech Stack & Implementation Standards
+
+* **Client-side Framework:** React 19, Vite, Tailwind CSS, and Framer Motion. 
+* **Backend:** Express & Node.js written in TypeScript, compiled with **esbuild**, and run on **tsx** in development.
+* **Resiliency & Fallbacks:** Built-in failovers connect to alternative model providers (such as Groq SDK) to ensure the system remains responsive even under Google Cloud Platform quota limits.
+* **Audit Logger:** A comprehensive, real-time client/server log drawer displays step-by-step agentic decisions, network updates, and auth updates, giving developers and users absolute transparency.
+* **Type Safety:** 100% strict TypeScript types and enums share states perfectly across files. No rendering state is un-typed.
 
 ---
 
-### 🚀 Quick Start (Local Setup)
+### 🚀 Running the App Locally
 
-Follow these instructions to spin up the application in a local developer environment:
-
-#### 1. Clone & Install Dependencies
-First, clone your repository and install the project dependencies:
+#### 1. Install Dependencies
 ```bash
 npm install
 ```
 
-#### 2. Environment Configuration
-Create a `.env` file in the root directory and define the required secret and environment configuration variables:
+#### 2. Configure Environment Variables
+Create a `.env` file in your root directory:
 ```env
-# Google Gemini API key used for the coordination loop
+# Google Gemini API key used for the planner & triage loops
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# Centralized Google OAuth Client ID for Production Auth Flow
-VITE_GOOGLE_CLIENT_ID=your_google_cloud_oauth_client_id
+# Centralized Google OAuth Client ID
+VITE_GOOGLE_CLIENT_ID=your_google_cloud_oauth_client_id_here
 
-# Groq API Key for Fallback Provider (Required for resiliency)
+# Optional: Groq API Key for Fallback Resiliency
 GROQ_API_KEY=your_groq_api_key_here
 
-# Email Reminder Config (Nodemailer via Gmail SMTP)
-REMINDER_EMAIL_USER=your-gmail@gmail.com
-REMINDER_EMAIL_PASS=your-app-password-here
+# Email SMTP Config for Reminders
+REMINDER_EMAIL_USER=your-email@gmail.com
+REMINDER_EMAIL_PASS=your-gmail-app-password-here
 ```
-*(Ensure `.env` matches your local workspace credentials and is never committed to Git).*
 
-#### 3. Run the Development Server
-Start the local development server:
+#### 3. Run Development Server
 ```bash
 npm run dev
 ```
-Open [http://localhost:3001](http://localhost:3001) in your browser to interact with the minimalist dashboard.
+The server will start on port `3000` with the Vite proxy automatically routing client-side requests. Visit [http://localhost:3000](http://localhost:3000) to begin using the application!
+
+---
+
+### 🛡️ Security & Privacy
+Last-Minute Life Saver prioritizes user security:
+* **Authorization Scope:** Access is requested via secure client-side Implicit Grant. Tokens are stored only inside browser memory (`localStorage`) and never persisted on any secondary database.
+* **Draft Safely:** Real calendar write operations, email triggers, and document uploads only occur **after** you inspect them and click "Approve and Sync" on the Approval Gate.
